@@ -233,6 +233,7 @@ class OpenAILlmService(LlmService):
             "model": self.model,
             "messages": messages,
         }
+        payload["temperature"] = request.temperature
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
         if tools_payload:
