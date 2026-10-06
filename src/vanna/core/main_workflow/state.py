@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from vanna.core.tool import ToolContext, ToolSchema
 
-
 MainWorkflowStatus = Literal["success", "failed", "skipped"]
 MainWorkflowStage = Literal[
     "question_understanding",
@@ -14,6 +13,7 @@ MainWorkflowStage = Literal[
     "sql_generation",
     "sql_regeneration",
     "successful_query_save",
+    "visualization",
     "final_answer",
     "final",
 ]
@@ -255,7 +255,9 @@ class MainWorkflowTurnState:
             "errors": list(errors or []),
         }
 
-    def record_selected_metadata_from_sql(self, sql: str | None) -> list[dict[str, Any]]:
+    def record_selected_metadata_from_sql(
+        self, sql: str | None
+    ) -> list[dict[str, Any]]:
         if not sql:
             return []
 
@@ -381,6 +383,7 @@ class MainWorkflowTurnState:
             "pending_message": self.pending_message,
             "result": dict(self.result),
         }
+
     ## 메타데이터 검색 결과 병합
     def add_metadata_search_result(
         self,
@@ -405,7 +408,7 @@ class MainWorkflowTurnState:
             for item in existing_searches
             if isinstance(item, dict)
         }
-        
+
         for search in searches:
             if not isinstance(search, dict):
                 continue
@@ -423,9 +426,7 @@ class MainWorkflowTurnState:
 
         candidate_index = {
             self._metadata_candidate_key(candidate): index
-            for index, candidate in enumerate(
-                existing_candidates
-            )
+            for index, candidate in enumerate(existing_candidates)
             if isinstance(candidate, dict)
         }
 
@@ -433,37 +434,25 @@ class MainWorkflowTurnState:
             if not isinstance(candidate, dict):
                 continue
 
-            candidate_key = self._metadata_candidate_key(
-                candidate
-            )
+            candidate_key = self._metadata_candidate_key(candidate)
 
             if candidate_key is None:
                 continue
 
-            existing_index = candidate_index.get(
-                candidate_key
-            )
+            existing_index = candidate_index.get(candidate_key)
 
             if existing_index is None:
-                existing_candidates.append(
-                    dict(candidate)
-                )
-                candidate_index[candidate_key] = (
-                    len(existing_candidates) - 1
-                )
+                existing_candidates.append(dict(candidate))
+                candidate_index[candidate_key] = len(existing_candidates) - 1
                 continue
 
             existing = existing_candidates[existing_index]
 
             # 새 검색에서 추가된 정보가 있으면 기존 후보를 보강
             existing.update(
-                {
-                    key: value
-                    for key, value in candidate.items()
-                    if value is not None
-                }
+                {key: value for key, value in candidate.items() if value is not None}
             )
-            
+
     ## 메타데이터 중복 판별 키
     @staticmethod
     def _metadata_candidate_key(
@@ -495,7 +484,7 @@ class MainWorkflowTurnState:
             )
 
         return None
-    
+
     ## few shot 저장
     def add_fewshot_results(
         self,
@@ -521,6 +510,7 @@ class MainWorkflowTurnState:
 
             self.fewshot.append(dict(example))
             existing_keys.add(example_key)
+
     ## few shot 중복 식별키
     # 현재 질문과 sql 쌍으로 존재
     # 향후 번호 등을 활용해서 더 간단한 방법으로 중복 거르는 방법에 대해 찾아야함

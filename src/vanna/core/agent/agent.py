@@ -72,14 +72,12 @@ def _workflow_context_has_tool_result(
             return False
         candidates = metadata.get("candidates")
         return isinstance(candidates, list) and any(
-            isinstance(candidate, dict) and bool(candidate)
-            for candidate in candidates
+            isinstance(candidate, dict) and bool(candidate) for candidate in candidates
         )
     if tool_name == "search_saved_correct_tool_uses":
         fewshot = workflow_metadata.get("fewshot")
         return isinstance(fewshot, list) and any(
-            isinstance(example, dict) and bool(example)
-            for example in fewshot
+            isinstance(example, dict) and bool(example) for example in fewshot
         )
     return False
 
@@ -675,15 +673,11 @@ class Agent:
         if self.main_workflow_executor:
             try:
                 turn_state_store = getattr(self, "turn_state_store", None)
-                current_turn_number = request_context.metadata.get(
-                    "turn_number"
-                )
+                current_turn_number = request_context.metadata.get("turn_number")
                 if not isinstance(current_turn_number, int):
                     if turn_state_store is not None:
                         current_turn_number = (
-                            await turn_state_store.get_next_turn_number(
-                                conversation_id
-                            )
+                            await turn_state_store.get_next_turn_number(conversation_id)
                         )
                     else:
                         current_turn_number = sum(
@@ -696,9 +690,7 @@ class Agent:
                     "turn_history",
                     {},
                 )
-                turn_history = (
-                    turn_history if isinstance(turn_history, dict) else {}
-                )
+                turn_history = turn_history if isinstance(turn_history, dict) else {}
                 # DB를 Turn history의 기준 저장소로 사용합니다.
                 # request metadata에 이전 요청의 빈 history 구조가 남아 있어도
                 # 현재 conversation/turn_number 기준으로 항상 다시 조회합니다.
@@ -712,16 +704,12 @@ class Agent:
                 request_context.metadata["turn_history"] = turn_history
 
                 latest_turns = turn_history.get("latest", [])
-                latest_turns = (
-                    latest_turns if isinstance(latest_turns, list) else []
-                )
+                latest_turns = latest_turns if isinstance(latest_turns, list) else []
                 question_history = [
                     {
                         "turn_number": history_item.get("turn_number"),
                         "question": history_item.get("question"),
-                        "structured_question": history_item.get(
-                            "structured_question"
-                        ),
+                        "structured_question": history_item.get("structured_question"),
                     }
                     for history_item in latest_turns
                     if isinstance(history_item, dict)
@@ -775,7 +763,9 @@ class Agent:
                 )
 
             if main_workflow_turn_state is not None:
-                question_subflow = main_workflow_turn_state.subworkflow("question_understanding")
+                question_subflow = main_workflow_turn_state.subworkflow(
+                    "question_understanding"
+                )
                 workflow_metadata = {
                     "status": question_subflow.status,
                     "structured_output": main_workflow_turn_state.structured_question,
@@ -791,32 +781,26 @@ class Agent:
                 # MainWorkflow owns turn/subworkflow state only.
                 # The existing Agent LLM/tool loop below remains responsible for
                 # producing the final assistant response.
-                for ui_component in getattr(main_workflow_turn_state, "ui_components", []):
+                for ui_component in getattr(
+                    main_workflow_turn_state, "ui_components", []
+                ):
                     yield ui_component
         # Agent no longer runs it as a separate branch.
 
         # Enhancer가 SQL 생성용 context를 구성할 수 있도록 다음 실행 단계를 SQL 생성으로 전환
         # enhancer 이전에 적용
         if main_workflow_turn_state is not None:
-            main_workflow_turn_state.stage = (
-                "sql_generation"
-            )
+            main_workflow_turn_state.stage = "sql_generation"
             if main_workflow_turn_state.operation not in {
                 "clarification_required",
                 "continue_with_warning",
                 "continuous_analysis_dataset_required",
             }:
-                main_workflow_turn_state.operation = (
-                    "sql_generation"
-                )
+                main_workflow_turn_state.operation = "sql_generation"
 
-            main_workflow_metadata = (
-                main_workflow_turn_state.to_metadata()
-            )
-            context.metadata["main_workflow"] = (
-                main_workflow_metadata
-            )
-        
+            main_workflow_metadata = main_workflow_turn_state.to_metadata()
+            context.metadata["main_workflow"] = main_workflow_metadata
+
         # 가공 전 원본 system prompt
         # tool 호출 이후 context 재구성 시 사용
         workflow_base_system_prompt = system_prompt
@@ -842,10 +826,12 @@ class Agent:
                         workflow_metadata=main_workflow_metadata,
                     )
                 except TypeError:
-                    system_prompt = await self.llm_context_enhancer.enhance_system_prompt(
-                        system_prompt,
-                        message,
-                        user,
+                    system_prompt = (
+                        await self.llm_context_enhancer.enhance_system_prompt(
+                            system_prompt,
+                            message,
+                            user,
+                        )
                     )
                 if main_workflow_turn_state is not None:
                     main_workflow_turn_state.record_context_enrichment(
@@ -856,7 +842,9 @@ class Agent:
                     )
                     main_workflow_metadata = main_workflow_turn_state.to_metadata()
                     context.metadata["main_workflow"] = main_workflow_metadata
-                    _log_turn_state("context_enrichment_saved", main_workflow_turn_state)
+                    _log_turn_state(
+                        "context_enrichment_saved", main_workflow_turn_state
+                    )
             except Exception as exc:
                 if main_workflow_turn_state is not None:
                     main_workflow_turn_state.record_context_enrichment(
@@ -868,7 +856,9 @@ class Agent:
                     )
                     main_workflow_metadata = main_workflow_turn_state.to_metadata()
                     context.metadata["main_workflow"] = main_workflow_metadata
-                    _log_turn_state("context_enrichment_failed", main_workflow_turn_state)
+                    _log_turn_state(
+                        "context_enrichment_failed", main_workflow_turn_state
+                    )
                 raise
 
             if self.observability_provider and enhancement_span:
@@ -1189,13 +1179,12 @@ class Agent:
                                 )
                     # state 변화 확인
                     state_changed = False
-                    
+
                     ## 메타 데이터 저장
                     if (
                         main_workflow_turn_state is not None
                         and result.success
-                        and tool_call.name
-                        == "search_business_metadata"
+                        and tool_call.name == "search_business_metadata"
                     ):
                         tool_metadata = result.metadata or {}
 
@@ -1230,11 +1219,7 @@ class Agent:
                         columns = tool_metadata.get("columns", [])
 
                         tables = tables if isinstance(tables, list) else []
-                        columns = (
-                            columns
-                            if isinstance(columns, list)
-                            else []
-                        )
+                        columns = columns if isinstance(columns, list) else []
 
                         candidates = [
                             {
@@ -1261,20 +1246,14 @@ class Agent:
                         state_changed = True
                         workflow_context_refresh_required = True
 
-                        if (
-                            main_workflow_turn_state.stage
-                            == "sql_regeneration"
-                        ):
-                            main_workflow_turn_state.operation = (
-                                "metadata_search"
-                            )
-                            
+                        if main_workflow_turn_state.stage == "sql_regeneration":
+                            main_workflow_turn_state.operation = "metadata_search"
+
                     ## Few shot 저장
                     if (
                         main_workflow_turn_state is not None
                         and result.success
-                        and tool_call.name
-                        == "search_saved_correct_tool_uses"
+                        and tool_call.name == "search_saved_correct_tool_uses"
                     ):
                         tool_metadata = result.metadata or {}
                         fewshot_results = tool_metadata.get("fewshot", [])
@@ -1286,13 +1265,8 @@ class Agent:
                         state_changed = True
                         workflow_context_refresh_required = True
 
-                        if (
-                            main_workflow_turn_state.stage
-                            == "sql_regeneration"
-                        ):
-                            main_workflow_turn_state.operation = (
-                                "fewshot_search"
-                            ) 
+                        if main_workflow_turn_state.stage == "sql_regeneration":
+                            main_workflow_turn_state.operation = "fewshot_search"
 
                     ## 연속 분석용 Dataset 참조 정보 저장
                     if (
@@ -1327,16 +1301,15 @@ class Agent:
                                 "active_dataset_saved",
                                 main_workflow_turn_state,
                             )
-                    
+
                     if state_changed:
-                        main_workflow_metadata = (
-                            main_workflow_turn_state.to_metadata()
-                        )
-                        context.metadata["main_workflow"] = (
-                            main_workflow_metadata
-                        )
-                    
-                    if main_workflow_turn_state is not None and tool_call.name == "run_sql":
+                        main_workflow_metadata = main_workflow_turn_state.to_metadata()
+                        context.metadata["main_workflow"] = main_workflow_metadata
+
+                    if (
+                        main_workflow_turn_state is not None
+                        and tool_call.name == "run_sql"
+                    ):
                         tool_arguments = tool_call.arguments or {}
                         sql_text = None
                         result_metadata = (
@@ -1347,10 +1320,10 @@ class Agent:
                             sql_text = executed_sql
                         if isinstance(tool_arguments, dict):
                             sql_text = sql_text or (
-                                    tool_arguments.get("sql")
-                                    or tool_arguments.get("query")
-                                    or tool_arguments.get("statement")
-                                )
+                                tool_arguments.get("sql")
+                                or tool_arguments.get("query")
+                                or tool_arguments.get("statement")
+                            )
                         if sql_text is not None:
                             sql_text = str(sql_text)
 
@@ -1375,13 +1348,9 @@ class Agent:
                             columns = result_metadata.get("columns")
 
                             main_workflow_turn_state.result["csv_name"] = (
-                                str(output_file)
-                                if output_file is not None
-                                else None
+                                str(output_file) if output_file is not None else None
                             )
-                            main_workflow_turn_state.result["row_count"] = (
-                                row_count
-                            )
+                            main_workflow_turn_state.result["row_count"] = row_count
                             main_workflow_turn_state.result["columns"] = (
                                 list(columns)
                                 if isinstance(columns, (list, tuple))
@@ -1408,15 +1377,29 @@ class Agent:
                             main_workflow_turn_state,
                         )
 
-                    # 성공한 SQL 사용 패턴 저장이 끝나면 최종 답변 단계로 전환
+                    # 성공한 SQL 사용 패턴 저장이 끝나면 시각화 단계로 전환
                     if (
                         main_workflow_turn_state is not None
                         and result.success
                         and tool_call.name == "save_question_tool_args"
                     ):
+                        main_workflow_turn_state.stage = "visualization"
+                        main_workflow_turn_state.operation = "visualization"
+                        workflow_context_refresh_required = True
+                    # 시각화 실패는 성공한 SQL의 상태를 변경하지 않습니다.
+                    if (
+                        main_workflow_turn_state is not None
+                        and main_workflow_turn_state.stage == "visualization"
+                        and tool_call.name == "visualize_data"
+                    ):
+                        main_workflow_turn_state.result["visualization"] = {
+                            "status": "success" if result.success else "failed",
+                            "error": None if result.success else result.error,
+                        }
                         main_workflow_turn_state.stage = "final_answer"
                         main_workflow_turn_state.operation = "final_answer"
                         workflow_context_refresh_required = True
+
                     # Update status card to show completion
                     final_status = "success" if result.success else "error"
                     if result.success:
@@ -1554,49 +1537,33 @@ class Agent:
                 ):
                     try:
                         # 최신 TurnState snapshot 생성
-                        main_workflow_metadata = (
-                            main_workflow_turn_state.to_metadata()
-                        )
-                        context.metadata["main_workflow"] = (
-                            main_workflow_metadata
-                        )
+                        main_workflow_metadata = main_workflow_turn_state.to_metadata()
+                        context.metadata["main_workflow"] = main_workflow_metadata
 
                         # 가공 전 원본 prompt에서 최신 context를 다시 생성
-                        system_prompt = await (
-                            self.llm_context_enhancer
-                            .enhance_system_prompt_with_workflow(
-                                workflow_base_system_prompt,
-                                message,
-                                user,
-                                workflow_state=(
-                                    main_workflow_turn_state
-                                ),
-                                workflow_metadata=(
-                                    main_workflow_metadata
-                                ),
-                            )
+                        system_prompt = await self.llm_context_enhancer.enhance_system_prompt_with_workflow(
+                            workflow_base_system_prompt,
+                            message,
+                            user,
+                            workflow_state=(main_workflow_turn_state),
+                            workflow_metadata=(main_workflow_metadata),
                         )
 
                         # 다음 LLM request의 metadata도 최신 snapshot으로 변경
-                        llm_request_metadata["main_workflow"] = (
-                            main_workflow_metadata
-                        )
+                        llm_request_metadata["main_workflow"] = main_workflow_metadata
 
                         workflow_context_refresh_succeeded = True
 
                     except Exception:
                         logger.exception(
-                            "Failed to refresh workflow context "
-                            "after tool execution"
+                            "Failed to refresh workflow context " "after tool execution"
                         )
 
                 # 새로운 Tool batch가 실행됐으므로 직전 batch의 완료 신호는
                 # 역할을 다했습니다. 원본 conversation은 유지하고 다음 LLM
                 # 입력에서만 직전 호출/결과 쌍을 제외합니다.
                 if tool_results:
-                    completed_tool_call_ids.update(
-                        latest_removable_tool_batch_ids
-                    )
+                    completed_tool_call_ids.update(latest_removable_tool_batch_ids)
                     latest_removable_tool_batch_ids = set()
 
                     current_batch_has_run_sql = any(
@@ -1605,12 +1572,9 @@ class Agent:
                     )
                     if (
                         current_batch_has_run_sql
-                        and latest_failed_run_sql_tool_call_id
-                        is not None
+                        and latest_failed_run_sql_tool_call_id is not None
                     ):
-                        completed_tool_call_ids.add(
-                            latest_failed_run_sql_tool_call_id
-                        )
+                        completed_tool_call_ids.add(latest_failed_run_sql_tool_call_id)
                         latest_failed_run_sql_tool_call_id = None
 
                 # TurnState 저장과 context 재구성이 모두 끝난 현재 batch의
@@ -1621,12 +1585,9 @@ class Agent:
                 for tool_result in tool_results:
                     if (
                         tool_result["success"]
-                        and tool_result["tool_name"]
-                        == "save_question_tool_args"
+                        and tool_result["tool_name"] == "save_question_tool_args"
                     ):
-                        completed_tool_call_ids.add(
-                            tool_result["tool_call_id"]
-                        )
+                        completed_tool_call_ids.add(tool_result["tool_call_id"])
 
                 if workflow_context_refresh_succeeded:
                     for tool_result in tool_results:
@@ -1649,13 +1610,10 @@ class Agent:
                                 tool_result["tool_call_id"]
                             )
 
-                        if (
-                            not tool_succeeded
-                            and tool_name == "run_sql"
-                        ):
-                            latest_failed_run_sql_tool_call_id = (
-                                tool_result["tool_call_id"]
-                            )
+                        if not tool_succeeded and tool_name == "run_sql":
+                            latest_failed_run_sql_tool_call_id = tool_result[
+                                "tool_call_id"
+                            ]
 
                 # Add tool responses to conversation
                 # For APIs that need all tool results in one message, this helps
@@ -1674,8 +1632,7 @@ class Agent:
                     ):
                         if (
                             tool_result["success"]
-                            and tool_result["tool_name"]
-                            == "search_business_metadata"
+                            and tool_result["tool_name"] == "search_business_metadata"
                         ):
                             tool_result_content = (
                                 "Metadata search completed. "
@@ -1735,38 +1692,31 @@ class Agent:
                 if (
                     main_workflow_turn_state is not None
                     and main_workflow_turn_state.stage
-                    == "successful_query_save"
+                    in {"successful_query_save", "visualization"}
                 ):
-                    main_workflow_turn_state.stage = "final_answer"
-                    main_workflow_turn_state.operation = "final_answer"
+                    next_stage = (
+                        "visualization"
+                        if main_workflow_turn_state.stage == "successful_query_save"
+                        else "final_answer"
+                    )
 
-                    main_workflow_metadata = (
-                        main_workflow_turn_state.to_metadata()
-                    )
-                    context.metadata["main_workflow"] = (
-                        main_workflow_metadata
-                    )
-                    llm_request_metadata["main_workflow"] = (
-                        main_workflow_metadata
-                    )
+                    main_workflow_turn_state.stage = next_stage
+                    main_workflow_turn_state.operation = next_stage
+
+                    main_workflow_metadata = main_workflow_turn_state.to_metadata()
+                    context.metadata["main_workflow"] = main_workflow_metadata
+                    llm_request_metadata["main_workflow"] = main_workflow_metadata
 
                     if (
                         self.llm_context_enhancer is not None
                         and workflow_base_system_prompt is not None
                     ):
-                        system_prompt = await (
-                            self.llm_context_enhancer
-                            .enhance_system_prompt_with_workflow(
-                                workflow_base_system_prompt,
-                                message,
-                                user,
-                                workflow_state=(
-                                    main_workflow_turn_state
-                                ),
-                                workflow_metadata=(
-                                    main_workflow_metadata
-                                ),
-                            )
+                        system_prompt = await self.llm_context_enhancer.enhance_system_prompt_with_workflow(
+                            workflow_base_system_prompt,
+                            message,
+                            user,
+                            workflow_state=(main_workflow_turn_state),
+                            workflow_metadata=(main_workflow_metadata),
                         )
 
                     request = await self._build_llm_request(
@@ -1785,30 +1735,16 @@ class Agent:
                 # final_answer 응답은 최종 메시지로 확정합니다.
                 # 그 이전 단계의 사용자 안내는 턴이 중간 종료될 때를 대비해
                 # pending_message에만 보관합니다.
-                if (
-                    main_workflow_turn_state is not None
-                    and response.content
-                ):
-                    if (
-                        main_workflow_turn_state.stage
-                        == "final_answer"
-                    ):
-                        main_workflow_turn_state.result["message"] = (
-                            response.content
-                        )
+                if main_workflow_turn_state is not None and response.content:
+                    if main_workflow_turn_state.stage == "final_answer":
+                        main_workflow_turn_state.result["message"] = response.content
                     else:
-                        main_workflow_turn_state.pending_message = (
-                            response.content
-                        )
+                        main_workflow_turn_state.pending_message = response.content
 
                 # stage와 최종 답변이 반영된 최신 snapshot 동기화
                 if main_workflow_turn_state is not None:
-                    main_workflow_metadata = (
-                        main_workflow_turn_state.to_metadata()
-                    )
-                    context.metadata["main_workflow"] = (
-                        main_workflow_metadata
-                    )
+                    main_workflow_metadata = main_workflow_turn_state.to_metadata()
+                    context.metadata["main_workflow"] = main_workflow_metadata
 
                 # Update status to idle and set completion message
                 yield UiComponent(  # type: ignore
@@ -1908,9 +1844,8 @@ You can:
             # SQL 성공 여부와 관계없이 최종 사용자 메시지가 있으면 저장해
             # 다음 Turn의 history에서 참조할 수 있도록 합니다.
             turn_state_store = getattr(self, "turn_state_store", None)
-            if (
-                turn_state_store is not None
-                and main_workflow_turn_state.result.get("message")
+            if turn_state_store is not None and main_workflow_turn_state.result.get(
+                "message"
             ):
                 await turn_state_store.save_turn(main_workflow_metadata)
 
@@ -2010,6 +1945,9 @@ You can:
             "successful_query_save": {
                 "save_question_tool_args",
             },
+            "visualization": {
+                "visualize_data",
+            },
             "final_answer": set(),
         }
 
@@ -2019,11 +1957,7 @@ You can:
         if allowed_tool_names is None:
             return tool_schemas
 
-        return [
-            schema
-            for schema in tool_schemas
-            if schema.name in allowed_tool_names
-        ]
+        return [schema for schema in tool_schemas if schema.name in allowed_tool_names]
 
     async def _build_llm_request(
         self,
@@ -2328,4 +2262,3 @@ You can:
                     )
 
         return response  #
-
