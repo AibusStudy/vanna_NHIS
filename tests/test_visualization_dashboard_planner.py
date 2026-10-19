@@ -36,3 +36,23 @@ def test_verified_region_field_adds_map_contract() -> None:
 
     map_view = next(view for view in dashboard["views"] if view["type"] == "map")
     assert map_view["geo"]["regionCodeField"] == "sido_cd"
+    assert map_view["geo"]["valueField"] == "count"
+
+
+def test_coordinates_add_executable_heatmap_contract() -> None:
+    dashboard = VisualizationDashboardPlanner().plan(
+        pd.DataFrame({"latitude": [37.56], "longitude": [126.97], "count": [25]}),
+        title="환자 밀집도",
+        column_metadata={
+            "latitude": {"semantic_type": "latitude"},
+            "longitude": {"semantic_type": "longitude"},
+            "count": {"logical_name": "환자 수", "unit": "명"},
+        },
+        structured_question={"requested_views": ["heatmap"]},
+    )
+
+    heatmap = next(view for view in dashboard["views"] if view["type"] == "heatmap")
+    assert heatmap["geo"]["latitudeField"] == "latitude"
+    assert heatmap["geo"]["longitudeField"] == "longitude"
+    assert heatmap["geo"]["valueField"] == "count"
+    assert heatmap["geo"]["valueLabel"] == "환자 수"

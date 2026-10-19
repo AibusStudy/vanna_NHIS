@@ -135,6 +135,7 @@ class VisualizationDashboardPlanner:
             "semanticType": item.get("semantic_type"),
             "codeName": item.get("code_name"),
             "unit": item.get("unit"),
+            "isNumeric": bool(pd.api.types.is_numeric_dtype(series)),
         }
 
     @staticmethod
@@ -148,6 +149,28 @@ class VisualizationDashboardPlanner:
         region = next((column for column in columns if str(column.get("semanticType") or "").lower() in {"region", "geography", "administrative_area"} or any(token in column["field"].lower() for token in ("sido", "sigungu", "region", "area_cd"))), None)
         latitude = next((column for column in columns if str(column.get("semanticType") or "").lower() == "latitude" or column["field"].lower() in {"lat", "latitude"}), None)
         longitude = next((column for column in columns if str(column.get("semanticType") or "").lower() == "longitude" or column["field"].lower() in {"lng", "lon", "longitude"}), None)
+        excluded_fields = {
+            field
+            for field in (
+                region["field"] if region else None,
+                latitude["field"] if latitude else None,
+                longitude["field"] if longitude else None,
+            )
+            if field
+        }
+        metric = next(
+            (
+                column
+                for column in columns
+                if column.get("isNumeric")
+                and column["field"] not in excluded_fields
+                and not any(
+                    token in column["field"].lower()
+                    for token in ("year", "yr", "년도", "연도")
+                )
+            ),
+            None,
+        )
         requested = requested or bool(geo_level) or region is not None or (latitude is not None and longitude is not None)
         errors: list[str] = []
         if requested and region is None and not (latitude and longitude):
@@ -159,6 +182,9 @@ class VisualizationDashboardPlanner:
             "regionCodeField": region["field"] if region else None,
             "latitudeField": latitude["field"] if latitude else None,
             "longitudeField": longitude["field"] if longitude else None,
+            "valueField": metric["field"] if metric else None,
+            "valueLabel": metric["label"] if metric else "값",
+            "valueUnit": metric.get("unit") if metric else None,
             "errors": errors,
         }
 
