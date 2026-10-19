@@ -14,6 +14,8 @@ MainWorkflowStage = Literal[
     "sql_generation",
     "sql_regeneration",
     "successful_query_save",
+    # SQL 실행 성공 뒤 반드시 거치는 고정 후속 단계
+    "visualization",
     "final_answer",
     "final",
 ]
@@ -174,6 +176,8 @@ class MainWorkflowTurnState:
             "question_understanding": SubworkflowState(),
             "data_discovery": SubworkflowState(),
             "sql_processing": SubworkflowState(),
+            # 시각화를 Agent의 임의 tool call이 아닌 메인 워크플로우 단계로 추적한다.
+            "visualization": SubworkflowState(),
         }
     )
 
