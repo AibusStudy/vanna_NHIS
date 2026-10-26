@@ -52,7 +52,17 @@ class ChartJsChartGenerator:
         ):
             self.region_code_scheme = "sequential"
         chart_type, data, axis_titles, values = self._create_chart(df.copy())
-        options = self._options(title, chart_type, axis_titles, values)
+        label_count = len(data.get("labels", []))
+        horizontal_bar = chart_type == "bar" and (
+            bool(geography_columns) or label_count >= 8
+        )
+        options = self._options(
+            title,
+            chart_type,
+            axis_titles,
+            values,
+            index_axis="y" if horizontal_bar else "x",
+        )
         return {"chart_type": chart_type, "data": data, "options": options}
 
     def _create_chart(
@@ -188,6 +198,8 @@ class ChartJsChartGenerator:
             "borderWidth": 2 if line else 0,
             "details": details,
         }
+        if not line:
+            result.update({"maxBarThickness": 28, "categoryPercentage": 0.82, "barPercentage": 0.9})
         if line:
             result.update({"tension": 0.28, "fill": False, "pointBackgroundColor": color})
         return result
@@ -198,6 +210,7 @@ class ChartJsChartGenerator:
         chart_type: str,
         axis_titles: tuple[str, str],
         values: list[float],
+        index_axis: str = "x",
     ) -> dict[str, Any]:
         options: dict[str, Any] = {
             "responsive": True,
@@ -210,16 +223,22 @@ class ChartJsChartGenerator:
             },
             "animation": {"duration": 450},
         }
+        if chart_type == "bar":
+            options["indexAxis"] = index_axis
         if chart_type != "doughnut":
             x_title, y_title = axis_titles
+            horizontal = chart_type == "bar" and index_axis == "y"
+            category_title = x_title
+            value_title = y_title
             options["scales"] = {
-                "x": {"grid": {"display": False}, "border": {"display": False}, "title": {"display": bool(x_title), "text": x_title, "color": self.TEXT_COLOR}, "ticks": {"color": self.MUTED_TEXT_COLOR}},
-                "y": {"grid": {"display": False}, "border": {"display": False}, "beginAtZero": True, "title": {"display": bool(y_title), "text": y_title, "color": self.TEXT_COLOR}, "ticks": {"color": self.MUTED_TEXT_COLOR}},
+                "x": {"grid": {"display": False}, "border": {"display": False}, "beginAtZero": horizontal, "title": {"display": bool(value_title if horizontal else category_title), "text": value_title if horizontal else category_title, "color": self.TEXT_COLOR}, "ticks": {"color": self.MUTED_TEXT_COLOR}},
+                "y": {"grid": {"display": False}, "border": {"display": False}, "beginAtZero": not horizontal, "title": {"display": bool(category_title if horizontal else value_title), "text": category_title if horizontal else value_title, "color": self.TEXT_COLOR}, "ticks": {"color": self.MUTED_TEXT_COLOR, "autoSkip": False}},
             }
             focused = self._focused_range(values)
             if focused:
                 lower, upper, step = focused
-                options["scales"]["y"].update({"beginAtZero": False, "min": lower, "max": upper, "ticks": {"color": self.MUTED_TEXT_COLOR, "stepSize": step}})
+                value_axis = "x" if horizontal else "y"
+                options["scales"][value_axis].update({"beginAtZero": False, "min": lower, "max": upper, "ticks": {"color": self.MUTED_TEXT_COLOR, "stepSize": step}})
         return options
 
     @classmethod

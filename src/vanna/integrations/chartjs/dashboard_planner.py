@@ -69,6 +69,10 @@ class VisualizationDashboardPlanner:
             if view_type == "table":
                 views.append({"id": "statistics-table", "type": "table", "title": f"{title} 통계표"})
             elif view_type in {"bar", "line", "doughnut"}:
+                label_count = len(primary.get("data", {}).get("labels", []))
+                horizontal_bar = view_type == "bar" and (
+                    geo["valid"] or label_count >= 8
+                )
                 views.append({
                     "id": f"{view_type}-chart",
                     "type": "chartjs",
@@ -77,7 +81,7 @@ class VisualizationDashboardPlanner:
                     "data": primary["data"],
                     "options": {
                         **primary["options"],
-                        "indexAxis": "y" if view_type == "bar" and geo["valid"] else "x",
+                        **({"indexAxis": "y" if horizontal_bar else "x"} if view_type == "bar" else {}),
                     },
                 })
             elif view_type == "summary":
