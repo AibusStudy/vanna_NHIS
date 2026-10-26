@@ -493,7 +493,7 @@ class MainWorkflowExecutor:
 
         visualization_task = Task(
             title="시각화 실행",
-            description="SQL 실행 결과를 Matplotlib 차트로 변환합니다.",
+            description="SQL 실행 결과를 표·차트·지도 대시보드로 변환합니다.",
             status="in_progress",
         )
         visualization_status = StatusCardComponent(
@@ -552,7 +552,7 @@ class MainWorkflowExecutor:
         if result.ui_component is not None:
             state.ui_components.append(result.ui_component)
         completion_description = (
-            "Matplotlib 시각화가 완료되었습니다."
+            "대화형 시각화 대시보드가 완료되었습니다."
             if result.success
             else f"시각화에 실패했습니다: {result.error or result.result_for_llm}"
         )

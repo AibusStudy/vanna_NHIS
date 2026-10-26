@@ -12,6 +12,7 @@ def test_multiple_series_does_not_create_misleading_composition() -> None:
     )
 
     assert "composition-chart" not in {view["id"] for view in dashboard["views"]}
+    assert [view["type"] for view in dashboard["views"]] == ["table", "chartjs", "summary"]
 
 
 def test_map_requires_verified_geographic_field() -> None:
@@ -56,3 +57,32 @@ def test_coordinates_add_executable_heatmap_contract() -> None:
     assert heatmap["geo"]["longitudeField"] == "longitude"
     assert heatmap["geo"]["valueField"] == "count"
     assert heatmap["geo"]["valueLabel"] == "환자 수"
+
+
+def test_nationwide_result_creates_exact_three_view_dashboard() -> None:
+    dashboard = VisualizationDashboardPlanner().plan(
+        pd.DataFrame({
+            "STD_YYYY": ["2023", "2023", "2023"],
+            "ZN_TYPE_CD": ["0", "1", "1"],
+            "SI_DO_CD": [None, "11", "26"],
+            "IDCT_VL": [100, 60, 40],
+        }),
+        title="요양기관 현황",
+        column_metadata={
+            "STD_YYYY": {"logical_name": "기준연도", "sql_role": "time", "semantic_type": "year"},
+            "ZN_TYPE_CD": {"logical_name": "지역구분코드", "sql_role": "code", "semantic_type": "code"},
+            "SI_DO_CD": {"logical_name": "시도", "sql_role": "dimension", "semantic_type": "administrative_area"},
+            "IDCT_VL": {"logical_name": "요양기관 수", "sql_role": "measure", "semantic_type": "quantity", "unit": "개"},
+        },
+        structured_question={
+            "geo_level": "시도",
+            "requested_views": ["table", "bar", "map"],
+            "visualization_plan": {"include_total": True},
+        },
+    )
+
+    assert [view["type"] for view in dashboard["views"]] == ["table", "chartjs", "map"]
+    assert dashboard["views"][1]["chartType"] == "bar"
+    assert dashboard["views"][2]["geo"]["regionLevelField"] == "ZN_TYPE_CD"
+    assert dashboard["views"][2]["geo"]["yearField"] == "STD_YYYY"
+    assert dashboard["layout"]["type"] == "split-3"

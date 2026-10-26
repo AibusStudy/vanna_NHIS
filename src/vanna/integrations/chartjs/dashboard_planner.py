@@ -33,38 +33,51 @@ class VisualizationDashboardPlanner:
         ]
         dataset = {"columns": columns, "rows": rows, "rowCount": len(rows)}
 
-        primary = self.chart_generator.generate_chart(df, title, column_metadata)
-        views: list[dict[str, Any]] = [
-            {"id": "statistics-table", "type": "table", "title": f"{title} 통계표"},
-            {
-                "id": "primary-chart",
-                "type": "chartjs",
-                "chartType": primary["chart_type"],
-                "title": title,
-                "data": primary["data"],
-                "options": primary["options"],
-            },
-        ]
-        views.extend(self._alternate_views(primary, title))
-
         geo = self._geo_contract(columns, structured)
-        if geo["valid"]:
-            views.append({
-                "id": "regional-map",
-                "type": "map",
-                "title": f"{title} 지역 분포",
-                "geo": geo,
-                "style": {"palette": ChartJsChartGenerator.COLOR_PALETTE, "mode": "choropleth"},
-            })
-            if geo.get("latitudeField") and geo.get("longitudeField"):
+        chart_df = self._chart_frame(df, geo, structured)
+        primary = self.chart_generator.generate_chart(chart_df, title, column_metadata)
+        requested_views = structured.get("requested_views")
+        requested = (
+            [str(view).lower() for view in requested_views]
+            if isinstance(requested_views, list) and requested_views
+            else ["table", primary["chart_type"], "summary"]
+        )
+        views: list[dict[str, Any]] = []
+        for view_type in requested:
+            if view_type == "table":
+                views.append({"id": "statistics-table", "type": "table", "title": f"{title} 통계표"})
+            elif view_type in {"bar", "line", "doughnut"}:
                 views.append({
-                    "id": "density-heatmap",
-                    "type": "heatmap",
-                    "title": f"{title} 밀집도",
+                    "id": f"{view_type}-chart",
+                    "type": "chartjs",
+                    "chartType": view_type,
+                    "title": title,
+                    "data": primary["data"],
+                    "options": {
+                        **primary["options"],
+                        "indexAxis": "y" if view_type == "bar" and geo["valid"] else "x",
+                    },
+                })
+            elif view_type == "summary":
+                views.append({
+                    "id": "summary-metrics",
+                    "type": "summary",
+                    "title": f"{title} 요약",
+                    "data": self._summary_contract(chart_df, columns),
+                })
+            elif view_type == "map" and geo["valid"]:
+                views.append({
+                    "id": "regional-map", "type": "map", "title": f"{title} 지역 분포",
+                    "geo": geo,
+                    "style": {"palette": ChartJsChartGenerator.COLOR_PALETTE, "mode": "choropleth"},
+                })
+            elif view_type == "heatmap" and geo["valid"] and geo.get("latitudeField") and geo.get("longitudeField"):
+                views.append({
+                    "id": "density-heatmap", "type": "heatmap", "title": f"{title} 밀집도",
                     "geo": geo,
                     "style": {"palette": ChartJsChartGenerator.COLOR_PALETTE, "mode": "density"},
                 })
-        elif geo["requested"]:
+        if geo["requested"] and not geo["valid"]:
             warnings.extend(geo["errors"])
 
         warnings.extend(self._metric_warnings(columns, structured))
@@ -75,8 +88,62 @@ class VisualizationDashboardPlanner:
             "dataset": dataset,
             "views": views,
             "filters": filters,
+            "layout": {
+                "type": "split-3" if len(views) == 3 else "grid",
+                "areas": [view["id"] for view in views],
+            },
             "warnings": list(dict.fromkeys(warnings)),
         }
+
+    @classmethod
+    def _summary_contract(
+        cls, df: pd.DataFrame, columns: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        column_by_field = {column["field"]: column for column in columns}
+        measures = [
+            field for field in df.select_dtypes(include=["number"]).columns
+            if not column_by_field.get(str(field), {}).get("isNumeric") is False
+            and str(column_by_field.get(str(field), {}).get("sqlRole") or "").lower()
+            not in {"time", "code", "dimension", "identifier"}
+        ]
+        cards: list[dict[str, Any]] = [{"label": "결과 행 수", "value": len(df), "unit": "건"}]
+        if measures:
+            field = str(measures[0])
+            metadata = column_by_field.get(field, {})
+            values = pd.to_numeric(df[field], errors="coerce").dropna()
+            if not values.empty:
+                if len(values) == 1:
+                    cards.insert(0, {"label": metadata.get("label") or field, "value": cls._json_value(values.iloc[0]), "unit": metadata.get("unit")})
+                else:
+                    cards.extend([
+                        {"label": f"최댓값 · {metadata.get('label') or field}", "value": cls._json_value(values.max()), "unit": metadata.get("unit")},
+                        {"label": f"최솟값 · {metadata.get('label') or field}", "value": cls._json_value(values.min()), "unit": metadata.get("unit")},
+                    ])
+        return {"cards": cards[:3]}
+
+    @staticmethod
+    def _chart_frame(
+        df: pd.DataFrame,
+        geo: dict[str, Any],
+        structured: dict[str, Any],
+    ) -> pd.DataFrame:
+        """Remove total rows and non-presentation dimensions from regional charts."""
+
+        frame = df.copy()
+        level_field = geo.get("regionLevelField")
+        plan = structured.get("visualization_plan")
+        include_total = isinstance(plan, dict) and bool(plan.get("include_total"))
+        if include_total and level_field in frame.columns:
+            level_values = frame[level_field].astype(str).str.replace(r"\.0$", "", regex=True)
+            matching = frame[level_values == str(geo.get("detailLevelValue") or "1")]
+            if not matching.empty:
+                frame = matching
+
+        presentation_fields = [
+            geo.get("yearField"), geo.get("regionCodeField"), geo.get("valueField")
+        ]
+        selected = [field for field in presentation_fields if field in frame.columns]
+        return frame[selected] if len(selected) >= 2 else frame
 
     def _alternate_views(self, primary: dict[str, Any], title: str) -> list[dict[str, Any]]:
         data = primary["data"]
@@ -135,9 +202,10 @@ class VisualizationDashboardPlanner:
             "semanticType": item.get("semantic_type"),
             "codeName": item.get("code_name"),
             "unit": item.get("unit"),
-            "isNumeric": bool(pd.api.types.is_numeric_dtype(series)),
+            "isNumeric": bool(pd.api.types.is_numeric_dtype(series)), # 261023 추가 : 지역 지도 및 위/경도 히트맵 계약
         }
 
+    # 지도 시각화 계약 및 설정
     @staticmethod
     def _geo_contract(columns: list[dict[str, Any]], structured: dict[str, Any]) -> dict[str, Any]:
         requested_views = structured.get("requested_views", [])
@@ -149,6 +217,8 @@ class VisualizationDashboardPlanner:
         region = next((column for column in columns if str(column.get("semanticType") or "").lower() in {"region", "geography", "administrative_area"} or any(token in column["field"].lower() for token in ("sido", "sigungu", "region", "area_cd"))), None)
         latitude = next((column for column in columns if str(column.get("semanticType") or "").lower() == "latitude" or column["field"].lower() in {"lat", "latitude"}), None)
         longitude = next((column for column in columns if str(column.get("semanticType") or "").lower() == "longitude" or column["field"].lower() in {"lng", "lon", "longitude"}), None)
+        region_level = next((column for column in columns if column["field"].upper() == "ZN_TYPE_CD"), None)
+        year = next((column for column in columns if str(column.get("semanticType") or "").lower() == "year" or column["field"].upper() in {"STD_YYYY", "YEAR"}), None)
         excluded_fields = {
             field
             for field in (
@@ -182,6 +252,10 @@ class VisualizationDashboardPlanner:
             "regionCodeField": region["field"] if region else None,
             "latitudeField": latitude["field"] if latitude else None,
             "longitudeField": longitude["field"] if longitude else None,
+            "regionLevelField": region_level["field"] if region_level else None,
+            "detailLevelValue": {"시도": "1", "시군구": "2", "읍면동": "3", "중진료권": "4"}.get(str(geo_level), "1"),
+            "totalLevelValue": "0",
+            "yearField": year["field"] if year else None,
             "valueField": metric["field"] if metric else None,
             "valueLabel": metric["label"] if metric else "값",
             "valueUnit": metric.get("unit") if metric else None,

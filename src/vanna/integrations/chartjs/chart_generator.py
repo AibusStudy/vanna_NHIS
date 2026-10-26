@@ -14,6 +14,14 @@ class ChartJsChartGenerator:
     COLOR_PALETTE = ["#B5121B", "#CF2E2E", "#E34A3F", "#E96B57", "#F08D75", "#F3B09E"]
     TEXT_COLOR = "#242424"
     MUTED_TEXT_COLOR = "#6B6B6B"
+    REGION_LABELS = {
+        "11": "서울특별시", "26": "부산광역시", "27": "대구광역시",
+        "28": "인천광역시", "29": "광주광역시", "30": "대전광역시",
+        "31": "울산광역시", "36": "세종특별자치시", "41": "경기도",
+        "42": "강원특별자치도", "43": "충청북도", "44": "충청남도",
+        "45": "전북특별자치도", "46": "전라남도", "47": "경상북도",
+        "48": "경상남도", "50": "제주특별자치도",
+    }
 
     def generate_chart(
         self,
@@ -231,7 +239,7 @@ class ChartJsChartGenerator:
         role = str(metadata.get("sql_role") or "").lower()
         semantic_type = str(metadata.get("semantic_type") or "").lower()
         name = str(column).lower()
-        return role in {"time", "code", "dimension", "identifier"} or semantic_type in {"year", "year_month", "date", "gender", "category", "code"} or any(token in name for token in ("_yr", "year", "_date", "_dt"))
+        return role in {"time", "code", "dimension", "identifier"} or semantic_type in {"year", "year_month", "date", "gender", "category", "code", "region", "geography", "administrative_area"} or any(token in name for token in ("_yr", "year", "_date", "_dt"))
 
     def _is_time_dimension(self, column: Any) -> bool:
         metadata = self.column_metadata.get(str(column), {})
@@ -242,6 +250,9 @@ class ChartJsChartGenerator:
         raw = str(value)
         if str(metadata.get("semantic_type") or "").lower() == "gender" or str(metadata.get("code_name") or "").upper() == "SEX_TYPE":
             return {"F": "여성", "M": "남성"}.get(raw.upper(), raw)
+        if str(metadata.get("semantic_type") or "").lower() in {"region", "geography", "administrative_area"}:
+            code = raw.removesuffix(".0")
+            return self.REGION_LABELS.get(code[:2], raw)
         if self._is_time_dimension(column) and raw.removesuffix(".0").isdigit():
             digits = raw.removesuffix(".0")
             if len(digits) == 4:
