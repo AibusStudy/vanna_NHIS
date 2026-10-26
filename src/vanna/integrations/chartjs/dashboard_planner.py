@@ -34,8 +34,30 @@ class VisualizationDashboardPlanner:
         dataset = {"columns": columns, "rows": rows, "rowCount": len(rows)}
 
         geo = self._geo_contract(columns, structured)
+        plan = structured.get("visualization_plan")
+        indicator_contract = plan.get("indicator_contract") if isinstance(plan, dict) else None
+        for column in columns:
+            if column["field"] == geo.get("regionCodeField"):
+                column["label"] = "시도" if geo.get("level") == "시도" else column["label"]
+            if column["field"] == geo.get("yearField"):
+                column["label"] = "기준연도"
+            if column["field"] == geo.get("valueField") and isinstance(indicator_contract, dict):
+                column["label"] = str(indicator_contract.get("metric_name") or column["label"])
+                geo["valueLabel"] = column["label"]
         chart_df = self._chart_frame(df, geo, structured)
-        primary = self.chart_generator.generate_chart(chart_df, title, column_metadata)
+        effective_metadata = dict(column_metadata)
+        for column in columns:
+            effective_metadata.setdefault(column["field"], {})
+            effective_metadata[column["field"]] = {
+                **effective_metadata[column["field"]],
+                "logical_name": column["label"],
+                "description": column["description"],
+                "sql_role": column["sqlRole"],
+                "semantic_type": column["semanticType"],
+                "code_name": column["codeName"],
+                "unit": column["unit"],
+            }
+        primary = self.chart_generator.generate_chart(chart_df, title, effective_metadata)
         requested_views = structured.get("requested_views")
         requested = (
             [str(view).lower() for view in requested_views]
@@ -193,13 +215,25 @@ class VisualizationDashboardPlanner:
     def _column_contract(column: Any, series: pd.Series, metadata: dict[str, dict[str, Any]]) -> dict[str, Any]:
         name = str(column)
         item = metadata.get(name, {})
+        normalized_name = name.lower()
+        inferred_geography = any(
+            token in normalized_name
+            for token in ("si_do", "sido", "sigungu", "si_gun_gu", "region", "area_cd", "emd_cd")
+        )
+        inferred_year = normalized_name in {"year", "std_year", "std_yyyy", "std_yr"} or normalized_name.endswith("_yr")
+        semantic_type = item.get("semantic_type") or (
+            "administrative_area" if inferred_geography else "year" if inferred_year else None
+        )
+        sql_role = item.get("sql_role") or (
+            "dimension" if inferred_geography else "time" if inferred_year else None
+        )
         return {
             "field": name,
             "label": item.get("logical_name") or name.replace("_", " ").title(),
             "description": item.get("description") or "",
             "dataType": str(series.dtype),
-            "sqlRole": item.get("sql_role"),
-            "semanticType": item.get("semantic_type"),
+            "sqlRole": sql_role,
+            "semanticType": semantic_type,
             "codeName": item.get("code_name"),
             "unit": item.get("unit"),
             "isNumeric": bool(pd.api.types.is_numeric_dtype(series)), # 261023 추가 : 지역 지도 및 위/경도 히트맵 계약
@@ -214,7 +248,7 @@ class VisualizationDashboardPlanner:
             for view in requested_views
         )
         geo_level = structured.get("geo_level")
-        region = next((column for column in columns if str(column.get("semanticType") or "").lower() in {"region", "geography", "administrative_area"} or any(token in column["field"].lower() for token in ("sido", "sigungu", "region", "area_cd"))), None)
+        region = next((column for column in columns if str(column.get("semanticType") or "").lower() in {"region", "geography", "administrative_area"} or any(token in column["field"].lower() for token in ("si_do", "sido", "sigungu", "si_gun_gu", "region", "area_cd", "emd_cd"))), None)
         latitude = next((column for column in columns if str(column.get("semanticType") or "").lower() == "latitude" or column["field"].lower() in {"lat", "latitude"}), None)
         longitude = next((column for column in columns if str(column.get("semanticType") or "").lower() == "longitude" or column["field"].lower() in {"lng", "lon", "longitude"}), None)
         region_level = next((column for column in columns if column["field"].upper() == "ZN_TYPE_CD"), None)

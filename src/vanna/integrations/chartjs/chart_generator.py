@@ -22,6 +22,14 @@ class ChartJsChartGenerator:
         "45": "전북특별자치도", "46": "전라남도", "47": "경상북도",
         "48": "경상남도", "50": "제주특별자치도",
     }
+    SEQUENTIAL_REGION_LABELS = {
+        str(index): label for index, label in enumerate((
+            "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
+            "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
+            "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도",
+            "경상남도", "제주특별자치도",
+        ), start=1)
+    }
 
     def generate_chart(
         self,
@@ -32,6 +40,17 @@ class ChartJsChartGenerator:
         if df.empty:
             raise ValueError("Cannot visualize empty DataFrame")
         self.column_metadata = column_metadata or {}
+        geography_columns = [
+            column for column in df.columns
+            if str(self.column_metadata.get(str(column), {}).get("semantic_type") or "").lower()
+            in {"region", "geography", "administrative_area"}
+        ]
+        self.region_code_scheme = "official"
+        if any(
+            any(str(value).removesuffix(".0").lstrip("0") in {str(index) for index in range(1, 11)} for value in df[column].dropna())
+            for column in geography_columns
+        ):
+            self.region_code_scheme = "sequential"
         chart_type, data, axis_titles, values = self._create_chart(df.copy())
         options = self._options(title, chart_type, axis_titles, values)
         return {"chart_type": chart_type, "data": data, "options": options}
@@ -252,6 +271,8 @@ class ChartJsChartGenerator:
             return {"F": "여성", "M": "남성"}.get(raw.upper(), raw)
         if str(metadata.get("semantic_type") or "").lower() in {"region", "geography", "administrative_area"}:
             code = raw.removesuffix(".0")
+            if getattr(self, "region_code_scheme", "official") == "sequential":
+                return self.SEQUENTIAL_REGION_LABELS.get(code.lstrip("0") or "0", raw)
             return self.REGION_LABELS.get(code[:2], raw)
         if self._is_time_dimension(column) and raw.removesuffix(".0").isdigit():
             digits = raw.removesuffix(".0")
