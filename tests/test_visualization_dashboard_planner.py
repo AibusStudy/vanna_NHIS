@@ -86,3 +86,24 @@ def test_nationwide_result_creates_exact_three_view_dashboard() -> None:
     assert dashboard["views"][2]["geo"]["regionLevelField"] == "ZN_TYPE_CD"
     assert dashboard["views"][2]["geo"]["yearField"] == "STD_YYYY"
     assert dashboard["layout"]["type"] == "split-3"
+
+
+def test_numeric_std_yyyy_is_not_selected_as_map_metric() -> None:
+    dashboard = VisualizationDashboardPlanner().plan(
+        pd.DataFrame({
+            "STD_YYYY": [2021, 2021],
+            "SI_DO_CD": ["11", "26"],
+            "IDCT_VL": [12.5, 9.8],
+        }),
+        title="항생제 처방률",
+        column_metadata={
+            "STD_YYYY": {"logical_name": "기준연도", "sql_role": "time", "semantic_type": "year"},
+            "SI_DO_CD": {"logical_name": "시도", "sql_role": "dimension", "semantic_type": "administrative_area"},
+            "IDCT_VL": {"logical_name": "항생제 처방률", "sql_role": "measure", "semantic_type": "ratio", "unit": "%"},
+        },
+        structured_question={"requested_views": ["table", "map"], "geo_level": "시도"},
+    )
+
+    map_view = next(view for view in dashboard["views"] if view["type"] == "map")
+    assert map_view["geo"]["yearField"] == "STD_YYYY"
+    assert map_view["geo"]["valueField"] == "IDCT_VL"

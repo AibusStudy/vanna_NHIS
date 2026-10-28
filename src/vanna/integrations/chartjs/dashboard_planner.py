@@ -261,6 +261,7 @@ class VisualizationDashboardPlanner:
                 region["field"] if region else None,
                 latitude["field"] if latitude else None,
                 longitude["field"] if longitude else None,
+                year["field"] if year else None,
             )
             if field
         }
@@ -270,6 +271,9 @@ class VisualizationDashboardPlanner:
                 for column in columns
                 if column.get("isNumeric")
                 and column["field"] not in excluded_fields
+                and str(column.get("sqlRole") or "").lower() == "measure"
+                and str(column.get("semanticType") or "").lower()
+                not in {"year", "time", "administrative_area", "region", "geography", "code"}
                 and not any(
                     token in column["field"].lower()
                     for token in ("year", "yr", "년도", "연도")
@@ -277,6 +281,20 @@ class VisualizationDashboardPlanner:
             ),
             None,
         )
+        if metric is None:
+            metric = next(
+                (
+                    column
+                    for column in columns
+                    if column.get("isNumeric")
+                    and column["field"] not in excluded_fields
+                    and not any(
+                        token in column["field"].lower()
+                        for token in ("year", "yyyy", "yr", "code", "_cd")
+                    )
+                ),
+                None,
+            )
         requested = requested or bool(geo_level) or region is not None or (latitude is not None and longitude is not None)
         errors: list[str] = []
         if requested and region is None and not (latitude and longitude):
