@@ -100,7 +100,7 @@ class ChartJsChartGenerator:
             all_values: list[float] = []
             for index, series_value in enumerate(sorted(df[series].dropna().unique().tolist())):
                 rows = df[df[series] == series_value]
-                lookup = rows.groupby(category, dropna=False)[value].sum().to_dict()
+                lookup = rows.groupby(category, dropna=False, sort=False)[value].sum().to_dict()
                 values = [self._number(lookup.get(item, 0)) for item in category_values]
                 all_values.extend(values)
                 details = [
@@ -120,7 +120,7 @@ class ChartJsChartGenerator:
 
         if len(measures) == 1 and len(dimensions) == 1:
             category, value = dimensions[0], measures[0]
-            grouped = df.groupby(category, dropna=False)[value].sum().reset_index()
+            grouped = df.groupby(category, dropna=False, sort=False)[value].sum().reset_index()
             labels = [self._display_value(category, item) for item in grouped[category]]
             values = [self._number(item) for item in grouped[value]]
             details = [self._detail(value, f"{self._label(category)}: {label}") for label in labels]
@@ -134,7 +134,7 @@ class ChartJsChartGenerator:
 
         if dimensions and len(measures) >= 2:
             category = dimensions[0]
-            grouped = df.groupby(category, dropna=False)[measures[:6]].sum().reset_index()
+            grouped = df.groupby(category, dropna=False, sort=False)[measures[:6]].sum().reset_index()
             labels = [self._display_value(category, item) for item in grouped[category]]
             datasets = []
             all_values: list[float] = []
