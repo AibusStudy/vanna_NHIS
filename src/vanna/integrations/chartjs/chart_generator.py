@@ -8,10 +8,11 @@ from typing import Any
 import pandas as pd
 
 
+# 표 색생 및 글자 색, Mute 요소 색, 지역 라벨 설정
 class ChartJsChartGenerator:
     """Build JSON-serializable Chart.js data and options from a DataFrame."""
 
-    COLOR_PALETTE = ["#B5121B", "#CF2E2E", "#E34A3F", "#E96B57", "#F08D75", "#F3B09E"]
+    COLOR_PALETTE = ["#BB4941", "#C96660", "#D5837E", "#E0A09C", "#EBBDBA", "#F5DAD8"]
     TEXT_COLOR = "#242424"
     MUTED_TEXT_COLOR = "#6B6B6B"
     REGION_LABELS = {
@@ -37,6 +38,7 @@ class ChartJsChartGenerator:
         title: str = "데이터 시각화",
         column_metadata: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        df = self._clean_frame(df)
         if df.empty:
             raise ValueError("Cannot visualize empty DataFrame")
         self.column_metadata = column_metadata or {}
@@ -52,10 +54,8 @@ class ChartJsChartGenerator:
         ):
             self.region_code_scheme = "sequential"
         chart_type, data, axis_titles, values = self._create_chart(df.copy())
-        label_count = len(data.get("labels", []))
-        horizontal_bar = chart_type == "bar" and (
-            bool(geography_columns) or label_count >= 8
-        )
+        # Dashboard 계약상 막대그래프는 항목 수와 무관하게 항상 가로 방향입니다.
+        horizontal_bar = chart_type == "bar"
         options = self._options(
             title,
             chart_type,
@@ -73,6 +73,12 @@ class ChartJsChartGenerator:
         numeric_dimensions = [column for column in numeric if self._is_dimension(column)]
         measures = [column for column in numeric if column not in numeric_dimensions]
         dimensions = categorical + numeric_dimensions
+        if dimensions:
+            df = df.dropna(subset=dimensions)
+        if measures:
+            df = df.dropna(subset=measures, how="all")
+        if df.empty:
+            raise ValueError("No valid values remain after removing missing or unknown data")
 
         if len(df) == 1 and measures:
             labels = [self._label(column) for column in measures[:6]]
@@ -187,13 +193,11 @@ class ChartJsChartGenerator:
         line: bool = False,
     ) -> dict[str, Any]:
         color = self.COLOR_PALETTE[color_index % len(self.COLOR_PALETTE)]
-        colors: str | list[str] = color
-        if per_item:
-            colors = [self.COLOR_PALETTE[index % len(self.COLOR_PALETTE)] for index in range(len(values))]
+        colors: str | list[str] = self._value_colors(values)
         result = {
             "label": label,
             "data": values,
-            "backgroundColor": colors if not line else "rgba(181,18,27,0.10)",
+            "backgroundColor": colors if not line else "rgba(187,73,65,0.10)",
             "borderColor": color,
             "borderWidth": 2 if line else 0,
             "details": details,
@@ -201,8 +205,42 @@ class ChartJsChartGenerator:
         if not line:
             result.update({"maxBarThickness": 28, "categoryPercentage": 0.82, "barPercentage": 0.9})
         if line:
-            result.update({"tension": 0.28, "fill": False, "pointBackgroundColor": color})
+            result.update({"tension": 0.28, "fill": False, "pointBackgroundColor": colors})
         return result
+
+    @classmethod
+    def _value_colors(cls, values: list[Any]) -> list[str]:
+        """Use the darkest brand color for the largest value and fade downward."""
+        numeric_values: list[float] = []
+        for value in values:
+            candidate = value.get("y") if isinstance(value, dict) else value
+            try:
+                number = float(candidate)
+            except (TypeError, ValueError):
+                number = 0.0
+            numeric_values.append(number if math.isfinite(number) else 0.0)
+        if not numeric_values:
+            return []
+        minimum, maximum = min(numeric_values), max(numeric_values)
+        if maximum == minimum:
+            return [cls.COLOR_PALETTE[0]] * len(numeric_values)
+        darkest = (187, 73, 65)
+        lightest = (245, 218, 216)
+        colors: list[str] = []
+        for value in numeric_values:
+            ratio = (value - minimum) / (maximum - minimum)
+            channels = tuple(round(light + ((dark - light) * ratio)) for light, dark in zip(lightest, darkest))
+            colors.append("#{:02X}{:02X}{:02X}".format(*channels))
+        return colors
+
+    @staticmethod
+    def _clean_frame(df: pd.DataFrame) -> pd.DataFrame:
+        cleaned = df.replace([math.inf, -math.inf], pd.NA).copy()
+        invalid = {"", "nan", "none", "null", "unknown", "unk", "n/a", "na", "미상", "알수없음", "알 수 없음"}
+        for column in cleaned.select_dtypes(include=["object", "category"]).columns:
+            normalized = cleaned[column].astype("string").str.strip().str.lower()
+            cleaned.loc[normalized.isin(invalid), column] = pd.NA
+        return cleaned.dropna(how="all")
 
     def _options(
         self,

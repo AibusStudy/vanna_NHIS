@@ -69,10 +69,8 @@ class VisualizationDashboardPlanner:
             if view_type == "table":
                 views.append({"id": "statistics-table", "type": "table", "title": f"{title} 통계표"})
             elif view_type in {"bar", "line", "doughnut"}:
-                label_count = len(primary.get("data", {}).get("labels", []))
-                horizontal_bar = view_type == "bar" and (
-                    geo["valid"] or label_count >= 8
-                )
+                # 항목이 하나뿐이어도 막대그래프는 동일한 가로 방향을 유지합니다.
+                horizontal_bar = view_type == "bar"
                 views.append({
                     "id": f"{view_type}-chart",
                     "type": "chartjs",
