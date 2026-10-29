@@ -5,9 +5,22 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from vanna.core.llm import LlmMessage, LlmRequest
+from vanna.core.tool import ToolCall
+from vanna.capabilities.sql_runner.statement import get_statement_type
+from vanna.components import (
+    ButtonGroupComponent,
+    StatusCardComponent,
+    Task,
+    TaskTrackerUpdateComponent,
+    UiComponent,
+)
 
 from vanna.core.question_understanding_subworkflow import (
     QuestUnderstand_Input,
@@ -130,6 +143,9 @@ class MainWorkflowExecutor:
         data_discovery_executor: Optional[DataDiscoverSubWorkflowExecutor] = None,
         router=None,
         csv_request_detector: Callable[[str], dict[str, Any]] | None = None,
+        llm_service: Any = None,
+        tool_registry: Any = None,
+        llm_context_enhancer: Any = None,
 
         # steps, limit 적용x
         # max_workflow_steps, workflow_retry_limit는 현재 MainWorkflowExecutor에서 적용하지 않는다.
@@ -142,6 +158,34 @@ class MainWorkflowExecutor:
         self.data_discovery_executor = data_discovery_executor
         self.router = router
         self.csv_request_detector = csv_request_detector
+        self.llm_service = llm_service
+        self.tool_registry = tool_registry
+        self.llm_context_enhancer = llm_context_enhancer
+
+    def configure_runtime(
+        self,
+        *,
+        llm_service: Any,
+        tool_registry: Any,
+        llm_context_enhancer: Any = None,
+    ) -> None:
+        """고정 SQL 파이프라인이 사용할 Agent 소유 런타임을 연결한다."""
+        self.llm_service = llm_service
+        self.tool_registry = tool_registry
+        self.llm_context_enhancer = llm_context_enhancer
+
+    @staticmethod
+    def _sync_tool_context(
+        input: MainWorkflowInput,
+        state: MainWorkflowTurnState,
+    ) -> None:
+        """run_sql/visualize_data가 선행 단계의 최신 근거를 읽도록 context를 동기화한다."""
+        metadata = getattr(input.tool_context, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            input.tool_context.metadata = metadata
+        metadata["main_workflow"] = state.to_metadata()
+        metadata["structured_question"] = dict(state.structured_question)
 
     #     self._apply_subworkflow_limits(
     #         self.question_understanding_executor,
@@ -216,11 +260,16 @@ class MainWorkflowExecutor:
         _log_turn_state("initialized", state)
 
         if state.operation == "clarification_required":
+            if self.llm_service is not None and self.tool_registry is not None:
+                state.result["status"] = "failed"
+                state.stage = "final"
             _log_turn_state("csv_request_unresolved", state)
             return state
 
         await self._run_question_understanding_with_fb1(input, state)
         _log_turn_state("question_understanding_saved", state)
+
+        self._apply_required_dimension_clarification(state)
 
         is_non_sql_intent = self._is_non_sql_intent(state)
         if self._should_run_data_discovery(state):
@@ -244,7 +293,314 @@ class MainWorkflowExecutor:
             _log_turn_state_summary("context_enrichment_ready", state)
         else:
             _log_turn_state("context_enrichment_ready", state)
+
+        # 질문 이해와 데이터 탐색이 끝나면 Agent loop로 반환하지 않고, 런타임이
+        # 연결된 경우 SQL 생성부터 시각화까지 정해진 후속 단계를 즉시 실행한다.
+        if self.llm_service is not None and self.tool_registry is not None:
+            await self._run_fixed_sql_pipeline(input, state)
         return state
+
+    # sql 생성 흐름 고정 pipline, sql 질문이 아닌 경우 _is_non_sql_intent의 형식을 출력
+    async def _run_fixed_sql_pipeline(
+        self,
+        input: MainWorkflowInput,
+        state: MainWorkflowTurnState,
+    ) -> None:
+        """자유형 Agent loop 없이 SQL 생성 → 검증 → 실행 → 시각화를 순서대로 수행한다."""
+        if state.operation == "clarification_required":
+            state.stage = "final"
+            return
+
+        if self._is_non_sql_intent(state):
+            examples = self._general_examples(state.original_question)
+            state.operation = "general_guidance"
+            state.result["status"] = "success"
+            state.result["message"] = "해당 Agent는 의료이용지표 Agent이기때문에 관련 질문을 해주세요."
+            state.ui_components.append(UiComponent(
+                rich_component=ButtonGroupComponent(
+                    buttons=[
+                        {"label": question, "action": question, "variant": "secondary"}
+                        for question in examples
+                    ],
+                    orientation="vertical",
+                    spacing="small",
+                    alignment="stretch",
+                    full_width=True,
+                ),
+                simple_component=None,
+            ))
+            state.stage = "final"
+            return
+
+        system_prompt = input.system_prompt or ""
+        if self.llm_context_enhancer is not None:
+            before = system_prompt
+            try:
+                system_prompt = await self.llm_context_enhancer.enhance_system_prompt_with_workflow(
+                    system_prompt,
+                    input.original_message,
+                    input.tool_context.user,
+                    workflow_state=state,
+                    workflow_metadata=state.to_metadata(),
+                )
+                state.record_context_enrichment(
+                    status="success",
+                    enhancer=self.llm_context_enhancer.__class__.__name__,
+                    system_prompt_before=before,
+                    system_prompt_after=system_prompt,
+                )
+            except Exception as exc:
+                state.record_context_enrichment(
+                    status="failed",
+                    enhancer=self.llm_context_enhancer.__class__.__name__,
+                    system_prompt_before=before,
+                    system_prompt_after=before,
+                    errors=[f"{type(exc).__name__}: {exc}"],
+                )
+                system_prompt = before
+        else:
+            state.record_context_enrichment(
+                status="skipped",
+                enhancer=None,
+                system_prompt_before=system_prompt,
+                system_prompt_after=system_prompt,
+            )
+
+        # 여러 도구 가운데 run_sql 하나만 SQL 생성 요청에 노출한다.
+        run_sql_schema = next(
+            (schema for schema in input.tool_schemas if schema.name == "run_sql"),
+            None,
+        )
+        if run_sql_schema is None:
+            self._fail_fixed_pipeline(state, "The run_sql tool is not available.")
+            return
+
+        # 이 지점부터 상태 전이는 LLM 선택이 아니라 아래 코드 순서에 의해 고정된다.
+        state.stage = "sql_generation"
+        state.operation = "sql_generation"
+        sql_subflow = state.subflow("sql_processing")
+        sql_subflow.status = "success"
+        sql_subflow.current_node = "generate_validate_execute"
+        sql_subflow.visited_nodes.append("generate_validate_execute")
+
+        context_json = json.dumps(
+            {
+                "structured_question": state.structured_question,
+                "metadata": state.metadata,
+                "fewshot": state.fewshot,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        messages = [
+            LlmMessage(
+                role="user",
+                content=(
+                    f"{input.original_message}\n\nWorkflow context:\n{context_json}\n\n"
+                    "Generate a read-only SQL query and return exactly one run_sql tool call."
+                ),
+            )
+        ]
+
+        last_error: str | None = None
+        # 최초 실행과 1회 교정 재시도만 허용하여 무제한 tool-calling loop를 방지한다.
+        for attempt_number in range(1, 3):
+            request = LlmRequest(
+                messages=messages,
+                tools=[run_sql_schema],
+                # 모델 응답을 run_sql 함수 호출로 제한한다.
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": "run_sql"},
+                },
+                user=input.tool_context.user,
+                stream=False,
+                temperature=0,
+                system_prompt=system_prompt,
+                metadata={"main_workflow": state.to_metadata()},
+            )
+            response = await self.llm_service.send_request(request)
+            run_sql_calls = [
+                call for call in (response.tool_calls or []) if call.name == "run_sql"
+            ]
+            # 호출이 없거나 여러 개이면 고정 파이프라인 계약 위반으로 처리한다.
+            if len(run_sql_calls) != 1:
+                received_names = [
+                    call.name for call in (response.tool_calls or [])
+                ]
+                last_error = (
+                    "SQL generation must return exactly one run_sql tool call. "
+                    f"Received {len(run_sql_calls)} run_sql call(s); "
+                    f"all tool calls={received_names}; "
+                    f"finish_reason={response.finish_reason!r}."
+                )
+                state.record_sql_attempt(sql=None, status="failed", error_message=last_error)
+            else:
+                tool_call = run_sql_calls[0]
+                sql = tool_call.arguments.get("sql") if isinstance(tool_call.arguments, dict) else None
+                if not isinstance(sql, str) or not sql.strip():
+                    last_error = "Generated run_sql call did not contain SQL."
+                    state.record_sql_attempt(sql=None, status="failed", error_message=last_error)
+                # 실행 전에 읽기 전용 SELECT인지 검사한다.
+                elif get_statement_type(sql) != "SELECT":
+                    last_error = "Only read-only SELECT statements are allowed."
+                    state.record_sql_attempt(
+                        sql=sql,
+                        status="failed",
+                        error_message=last_error,
+                    )
+                else:
+                    # run_sql validates that metadata discovery succeeded in the
+                    # current turn. Agent._send_message cannot publish this state
+                    # after run() returns because the tool executes inside run().
+                    self._sync_tool_context(input, state)
+                    result = await self.tool_registry.execute(tool_call, input.tool_context)
+                    state.record_sql_attempt(
+                        sql=sql,
+                        status="success" if result.success else "failed",
+                        error_message=None if result.success else (result.error or result.result_for_llm),
+                    )
+                    if result.ui_component is not None:
+                        state.ui_components.append(result.ui_component)
+                    if result.success:
+                        state.record_selected_metadata_from_sql(sql)
+                        metadata = result.metadata or {}
+                        state.result["csv_name"] = metadata.get("output_file")
+                        state.result["row_count"] = metadata.get("row_count")
+                        state.result["columns"] = list(metadata.get("columns") or [])
+                        # SQL 성공 시 반환된 CSV를 입력으로 시각화를 즉시 연속 실행한다.
+                        visualized = await self._visualize_sql_result(input, state)
+                        sql_subflow.current_node = None
+                        state.result["status"] = "success"
+                        state.result["message"] = (
+                            "SQL query and visualization completed successfully."
+                            if visualized
+                            else "SQL query completed successfully; no visualization was produced."
+                        )
+                        state.stage = "final"
+                        state.operation = "final_response_ready"
+                        return
+                    last_error = result.error or result.result_for_llm
+
+            if attempt_number == 1:
+                messages.append(
+                    LlmMessage(
+                        role="user",
+                        content=(
+                            f"The previous SQL generation or execution failed: {last_error}. "
+                            "Correct it and return exactly one run_sql tool call."
+                        ),
+                    )
+                )
+
+        sql_subflow.status = "failed"
+        sql_subflow.current_node = None
+        sql_subflow.errors.append(last_error or "SQL processing failed")
+        self._fail_fixed_pipeline(state, last_error or "SQL processing failed")
+
+    async def _visualize_sql_result(
+        self,
+        input: MainWorkflowInput,
+        state: MainWorkflowTurnState,
+    ) -> bool:
+        # 시각화도 별도 Agent 판단 없이 SQL 성공 직후 고정된 후속 단계로 실행한다.
+        visualization = state.subflow("visualization")
+        visualization.current_node = "visualize_data"
+        visualization.visited_nodes.append("visualize_data")
+        state.stage = "visualization"
+        state.operation = "visualize_data"
+
+        visualization_task = Task(
+            title="시각화 실행",
+            description="SQL 실행 결과를 표·차트·지도 대시보드로 변환합니다.",
+            status="in_progress",
+        )
+        visualization_status = StatusCardComponent(
+            title="시각화 실행",
+            status="running",
+            description="SQL 실행 결과를 시각화하고 있습니다.",
+            icon="📊",
+            metadata={"tool_name": "visualize_data"},
+        )
+        state.ui_components.extend(
+            [
+                UiComponent(
+                    rich_component=TaskTrackerUpdateComponent.add_task(
+                        visualization_task
+                    )
+                ),
+                UiComponent(rich_component=visualization_status),
+            ]
+        )
+
+        filename = state.result.get("csv_name")
+        if not isinstance(filename, str) or not filename:
+            visualization.status = "skipped"
+            visualization.current_node = None
+            state.ui_components.extend(
+                [
+                    UiComponent(
+                        rich_component=TaskTrackerUpdateComponent.update_task(
+                            visualization_task.id,
+                            status="error",
+                            detail="시각화할 SQL 결과 파일이 없습니다.",
+                        )
+                    ),
+                    UiComponent(
+                        rich_component=visualization_status.set_status(
+                            "warning",
+                            "시각화할 SQL 결과 파일이 없어 단계를 건너뛰었습니다.",
+                        )
+                    ),
+                ]
+            )
+            return False
+
+        result = await self.tool_registry.execute(
+            ToolCall(
+                id=f"visualize_{uuid.uuid4().hex[:8]}",
+                name="visualize_data",
+                arguments={"filename": filename, "title": input.original_message},
+            ),
+            input.tool_context,
+        )
+        visualization.status = "success" if result.success else "failed"
+        visualization.current_node = None
+        if not result.success:
+            visualization.errors.append(result.error or result.result_for_llm)
+        if result.ui_component is not None:
+            state.ui_components.append(result.ui_component)
+        completion_description = (
+            "대화형 시각화 대시보드가 완료되었습니다."
+            if result.success
+            else f"시각화에 실패했습니다: {result.error or result.result_for_llm}"
+        )
+        state.ui_components.extend(
+            [
+                UiComponent(
+                    rich_component=TaskTrackerUpdateComponent.update_task(
+                        visualization_task.id,
+                        status="completed" if result.success else "error",
+                        detail=completion_description,
+                    )
+                ),
+                UiComponent(
+                    rich_component=visualization_status.set_status(
+                        "success" if result.success else "error",
+                        completion_description,
+                    )
+                ),
+            ]
+        )
+        return result.success
+
+    @staticmethod
+    def _fail_fixed_pipeline(state: MainWorkflowTurnState, message: str) -> None:
+        # 어느 고정 단계에서 실패해도 final로 수렴시켜 Agent loop 재진입을 막는다.
+        state.result["status"] = "failed"
+        state.result["message"] = message
+        state.stage = "final"
+        state.operation = "final_response_ready"
 
     @staticmethod
     def _latest_history_csv_name(
@@ -578,6 +934,8 @@ class MainWorkflowExecutor:
         return await self.data_discovery_executor.run(main_input, state)
 
     def _should_run_data_discovery(self, state: MainWorkflowTurnState) -> bool:
+        if state.operation == "clarification_required":
+            return False
         question_subflow = state.subflow("question_understanding")
         if (
             question_subflow.status == "success"
@@ -594,6 +952,85 @@ class MainWorkflowExecutor:
             )
             and bool(state.original_question.strip())
         )
+
+    # sql(통계지표)와 관련없는 질문을 헀을 때, 제시하는 기본 3가지 예시 가이드 질문
+    @staticmethod
+    def _general_examples(question: str) -> list[str]:
+        """관련 의료 키워드가 있으면 같은 주제의 예시를, 없으면 기본 예시를 반환합니다."""
+        normalized = str(question or "").casefold()
+        topic_examples = (
+            (("항생제", "antibiotic"), [
+                "2024년 전국 항생제 처방률을 보여줘.",
+                "2024년 시도별 항생제 처방률을 보여줘.",
+                "연도별 전국 항생제 처방률 추이를 보여줘.",
+            ]),
+            (("진료비", "의료비"), [
+                "2024년 전국 총 진료비를 보여줘.",
+                "2024년 시도별 총 진료비를 보여줘.",
+                "전국 연도별 총 진료비 추이를 보여줘.",
+            ]),
+            (("검진", "건강검진"), [
+                "2024년 전국 건강검진 수검자 수를 보여줘.",
+                "2024년 시도별 건강검진 수검자 수를 보여줘.",
+                "연도별 건강검진 수검자 수를 보여줘.",
+            ]),
+            (("요양기관", "병원", "의료기관"), [
+                "2024년 전국 요양기관 수를 보여줘.",
+                "2024년 시도별 요양기관 수를 보여줘.",
+                "전국 연도별 요양기관 수 추이를 보여줘.",
+            ]),
+        )
+        for keywords, examples in topic_examples:
+            if any(keyword in normalized for keyword in keywords):
+                return examples
+        return [
+            "전국 요양기관 수를 보여줘.",
+            "연도별 건강검진 수검자 수를 보여줘.",
+            "시도별 의료이용 현황을 보여줘.",
+        ]
+
+    @staticmethod
+    def _apply_required_dimension_clarification(state: MainWorkflowTurnState) -> None:
+        """통계 질문의 연도와 지역 범위를 SQL 생성 전에 확정합니다."""
+        if state.subflow("question_understanding").status != "success":
+            return
+        structured = state.structured_question
+        if structured.get("intent") != "sql":
+            return
+
+        question = state.original_question.strip()
+        group_by = structured.get("group_by") if isinstance(structured.get("group_by"), list) else []
+        time_conditions = structured.get("time_conditions") if isinstance(structured.get("time_conditions"), list) else []
+        group_text = " ".join(
+            " ".join(str(item.get(key) or "") for key in ("field_meaning", "original_text"))
+            for item in group_by if isinstance(item, dict)
+        )
+        requests_time_series = any(term in question or term in group_text for term in ("연도별", "년도별", "해마다", "매년"))
+        has_year = bool(time_conditions) or bool(re.search(r"(?:19|20)\d{2}\s*년?", question)) or requests_time_series
+        region_names = (
+            "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+            "경기", "강원", "충북", "충청북도", "충남", "충청남도", "전북",
+            "전라북도", "전남", "전라남도", "경북", "경상북도", "경남",
+            "경상남도", "제주",
+        )
+        has_region = (
+            "전국" in question
+            or any(region in question for region in region_names)
+            or any(term in question for term in ("시도별", "시·도별", "지역별", "시군구별", "읍면동별", "중진료권별"))
+            or any(term in group_text for term in ("지역", "시도", "시·도", "시군구", "읍면동", "중진료권"))
+        )
+
+        if not has_year:
+            state.operation = "clarification_required"
+            state.result["status"] = "success"
+            state.result["message"] = "조회할 연도를 지정해 주세요. 예: 2024년 전국 총 진료비를 보여줘."
+            state.stage = "final"
+            return
+        if not has_region:
+            state.operation = "clarification_required"
+            state.result["status"] = "success"
+            state.result["message"] = "조회할 지역 범위를 지정해 주세요. 전국인지, 특정 시·도 또는 시군구인지 알려주세요."
+            state.stage = "final"
 
     def _apply_data_discovery_result(
         self,

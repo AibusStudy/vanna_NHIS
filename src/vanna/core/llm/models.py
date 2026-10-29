@@ -28,6 +28,12 @@ class LlmRequest(BaseModel):
     tools: Optional[List[Any]] = Field(
         default=None, description="Available tools"
     )  # Will be ToolSchema but avoiding circular import
+    # 고정 SQL 단계에서 모델이 일반 텍스트나 다른 도구를 선택하지 못하도록
+    # provider에 전달할 필수 도구(run_sql) 선택 정책을 요청 단위로 보관한다.
+    tool_choice: Optional[Any] = Field(
+        default=None,
+        description="Provider-specific tool selection policy, such as a required function",
+    )
     user: User = Field(description="User making the request")
     stream: bool = Field(default=False, description="Whether to stream response")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
