@@ -298,6 +298,7 @@ class MainWorkflowExecutor:
         # 연결된 경우 SQL 생성부터 시각화까지 정해진 후속 단계를 즉시 실행한다.
         if self.llm_service is not None and self.tool_registry is not None:
             await self._run_fixed_sql_pipeline(input, state)
+            _log_turn_state("fixed_sql_pipeline_completed", state)
         return state
 
     # sql 생성 흐름 고정 pipline, sql 질문이 아닌 경우 _is_non_sql_intent의 형식을 출력
@@ -403,8 +404,11 @@ class MainWorkflowExecutor:
         ]
 
         last_error: str | None = None
-        # 최초 실행과 1회 교정 재시도만 허용하여 무제한 tool-calling loop를 방지한다.
-        for attempt_number in range(1, 3):
+        seen_failures: set[tuple[str, str]] = set()
+        # 최초 실행과 최대 2회 교정 재시도를 허용한다. 동일 SQL과 동일 오류가
+        # 반복되면 횟수가 남아 있어도 조기 종료한다.
+        for attempt_number in range(1, 4):
+            attempt_sql: str | None = None
             request = LlmRequest(
                 messages=messages,
                 tools=[run_sql_schema],
@@ -450,6 +454,7 @@ class MainWorkflowExecutor:
                         error_message=last_error,
                     )
                 else:
+                    attempt_sql = sql
                     # run_sql validates that metadata discovery succeeded in the
                     # current turn. Agent._send_message cannot publish this state
                     # after run() returns because the tool executes inside run().
@@ -482,13 +487,28 @@ class MainWorkflowExecutor:
                         return
                     last_error = result.error or result.result_for_llm
 
-            if attempt_number == 1:
+            failure_signature = (
+                " ".join((attempt_sql or "").split()).upper(),
+                " ".join((last_error or "").split()),
+            )
+            if failure_signature in seen_failures:
+                last_error = (
+                    f"Repeated SQL correction failure; stopped early. {last_error or ''}"
+                ).strip()
+                break
+            seen_failures.add(failure_signature)
+
+            if attempt_number < 3:
+                failed_sql = attempt_sql or "(SQL tool call was not produced)"
                 messages.append(
                     LlmMessage(
                         role="user",
                         content=(
-                            f"The previous SQL generation or execution failed: {last_error}. "
-                            "Correct it and return exactly one run_sql tool call."
+                            "The previous SQL generation or execution failed.\n\n"
+                            f"Previous SQL:\n```sql\n{failed_sql}\n```\n\n"
+                            f"Validation or execution errors:\n{last_error}\n\n"
+                            "Preserve every already-correct clause, correct all listed errors, "
+                            "and return exactly one run_sql tool call."
                         ),
                     )
                 )
