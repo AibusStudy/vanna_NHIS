@@ -404,6 +404,8 @@ class MainWorkflowExecutor:
         ]
 
         last_error: str | None = None
+        last_error_type: str | None = None
+        cumulative_correction_rules: dict[str, dict[str, Any]] = {}
         seen_failures: set[tuple[str, str]] = set()
         # 최초 실행과 최대 2회 교정 재시도를 허용한다. 동일 SQL과 동일 오류가
         # 반복되면 횟수가 남아 있어도 조기 종료한다.
@@ -438,16 +440,19 @@ class MainWorkflowExecutor:
                     f"all tool calls={received_names}; "
                     f"finish_reason={response.finish_reason!r}."
                 )
+                last_error_type = "sql_tool_call_contract_error"
                 state.record_sql_attempt(sql=None, status="failed", error_message=last_error)
             else:
                 tool_call = run_sql_calls[0]
                 sql = tool_call.arguments.get("sql") if isinstance(tool_call.arguments, dict) else None
                 if not isinstance(sql, str) or not sql.strip():
                     last_error = "Generated run_sql call did not contain SQL."
+                    last_error_type = "sql_tool_call_contract_error"
                     state.record_sql_attempt(sql=None, status="failed", error_message=last_error)
                 # 실행 전에 읽기 전용 SELECT인지 검사한다.
                 elif get_statement_type(sql) != "SELECT":
                     last_error = "Only read-only SELECT statements are allowed."
+                    last_error_type = "sql_statement_policy_error"
                     state.record_sql_attempt(
                         sql=sql,
                         status="failed",
@@ -460,10 +465,23 @@ class MainWorkflowExecutor:
                     # after run() returns because the tool executes inside run().
                     self._sync_tool_context(input, state)
                     result = await self.tool_registry.execute(tool_call, input.tool_context)
+                    result_metadata = result.metadata or {}
+                    result_error_type = result_metadata.get("error_type")
+                    if isinstance(result_error_type, str):
+                        last_error_type = result_error_type
+                    for rule in result_metadata.get("correction_rules", []):
+                        if not isinstance(rule, dict):
+                            continue
+                        code = rule.get("code")
+                        if isinstance(code, str) and code:
+                            cumulative_correction_rules[code] = dict(rule)
+                    attempt_error = result.error or result.result_for_llm
+                    if not result.success and last_error_type:
+                        attempt_error = f"[{last_error_type}] {attempt_error}"
                     state.record_sql_attempt(
                         sql=sql,
                         status="success" if result.success else "failed",
-                        error_message=None if result.success else (result.error or result.result_for_llm),
+                        error_message=None if result.success else attempt_error,
                     )
                     if result.ui_component is not None:
                         state.ui_components.append(result.ui_component)
@@ -507,15 +525,24 @@ class MainWorkflowExecutor:
 
             if attempt_number < 3:
                 failed_sql = attempt_sql or "(SQL tool call was not produced)"
+                validation_feedback = {
+                    "error_type": last_error_type,
+                    "latest_error": last_error,
+                    "cumulative_correction_rules": list(
+                        cumulative_correction_rules.values()
+                    ),
+                }
                 messages.append(
                     LlmMessage(
                         role="user",
                         content=(
                             "The previous SQL generation or execution failed.\n\n"
                             f"Previous SQL:\n```sql\n{failed_sql}\n```\n\n"
-                            f"Validation or execution errors:\n{last_error}\n\n"
-                            "Preserve every already-correct clause, correct all listed errors, "
-                            "and return exactly one run_sql tool call."
+                            "Structured validation feedback:\n"
+                            f"{json.dumps(validation_feedback, ensure_ascii=False, indent=2)}\n\n"
+                            "Every cumulative_correction_rule is an invariant for all later "
+                            "attempts. Preserve clauses that satisfy earlier rules, correct all "
+                            "listed errors, and return exactly one run_sql tool call."
                         ),
                     )
                 )
@@ -523,7 +550,10 @@ class MainWorkflowExecutor:
         sql_subflow.status = "failed"
         sql_subflow.current_node = None
         sql_subflow.errors.append(last_error or "SQL processing failed")
-        self._fail_fixed_pipeline(state, last_error or "SQL processing failed")
+        final_error = last_error or "SQL processing failed"
+        if last_error_type:
+            final_error = f"[{last_error_type}] {final_error}"
+        self._fail_fixed_pipeline(state, final_error)
 
     async def _visualize_sql_result(
         self,
