@@ -1032,10 +1032,13 @@ class MainWorkflowExecutor:
 
         question = state.original_question.strip()
         group_by = structured.get("group_by") if isinstance(structured.get("group_by"), list) else []
+        time_conditions = structured.get("time_conditions") if isinstance(structured.get("time_conditions"), list) else []
         group_text = " ".join(
             " ".join(str(item.get(key) or "") for key in ("field_meaning", "original_text"))
             for item in group_by if isinstance(item, dict)
         )
+        requests_time_series = any(term in question or term in group_text for term in ("연도별", "년도별", "해마다", "매년"))
+        has_year = bool(time_conditions) or bool(re.search(r"(?:19|20)\d{2}\s*년?", question)) or requests_time_series
         region_names = (
             "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
             "경기", "강원", "충북", "충청북도", "충남", "충청남도", "전북",
@@ -1049,6 +1052,12 @@ class MainWorkflowExecutor:
             or any(term in group_text for term in ("지역", "시도", "시·도", "시군구", "읍면동", "중진료권"))
         )
 
+        if not has_year:
+            state.operation = "clarification_required"
+            state.result["status"] = "success"
+            state.result["message"] = "조회할 연도를 지정해 주세요. 예: 2024년 전국 총 진료비를 보여줘."
+            state.stage = "final"
+            return
         if not has_region:
             state.operation = "clarification_required"
             state.result["status"] = "success"

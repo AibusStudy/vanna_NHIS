@@ -674,6 +674,19 @@ class Agent:
 
         if self.main_workflow_executor:
             try:
+                # 고정 워크플로우가 Agent 바깥의 LLM/tool-calling loop에 의존하지 않고
+                # SQL 생성·실행·시각화를 직접 수행하도록 Agent 소유 런타임을 주입한다.
+                configure_runtime = getattr(
+                    self.main_workflow_executor,
+                    "configure_runtime",
+                    None,
+                )
+                if callable(configure_runtime):
+                    configure_runtime(
+                        llm_service=self.llm_service,
+                        tool_registry=self.tool_registry,
+                        llm_context_enhancer=self.llm_context_enhancer,
+                    )
                 turn_state_store = getattr(self, "turn_state_store", None)
                 current_turn_number = request_context.metadata.get(
                     "turn_number"
@@ -762,6 +775,27 @@ class Agent:
                     "errors": [f"Main workflow failed: {str(e)}"],
                 }
                 logger.exception("[agent.main_workflow] failed")
+                error_message = f"Main workflow failed: {str(e)}"
+                conversation.add_message(
+                    Message(role="assistant", content=error_message)
+                )
+                yield UiComponent(
+                    rich_component=StatusCardComponent(
+                        title="Workflow failed",
+                        status="error",
+                        description=error_message,
+                    ),
+                    simple_component=SimpleTextComponent(text=error_message),
+                )
+                yield UiComponent(  # type: ignore
+                    rich_component=ChatInputUpdateComponent(
+                        placeholder="Try again...",
+                        disabled=False,
+                    )
+                )
+                if self.config.auto_save_conversations:
+                    await self.conversation_store.update_conversation(conversation)
+                return
 
             if main_workflow_metadata is not None:
                 context.metadata["main_workflow"] = main_workflow_metadata
@@ -789,10 +823,53 @@ class Agent:
                     )
 
                 # MainWorkflow owns turn/subworkflow state only.
-                # The existing Agent LLM/tool loop below remains responsible for
-                # producing the final assistant response.
+                # 고정 워크플로우 내부에서 생성된 SQL 실행/시각화 UI를 순서대로 전달한다.
                 for ui_component in getattr(main_workflow_turn_state, "ui_components", []):
                     yield ui_component
+
+                # final은 질문 이해 → 데이터 탐색 → 컨텍스트 보강 → SQL 생성/검증/실행 →
+                # 시각화까지 완료됐다는 종료 신호다. 여기서 return하여 아래의 자유형
+                # Agent LLM/tool-calling loop로 다시 진입하는 것을 막는다.
+                if main_workflow_turn_state.stage == "final":
+                    final_message = main_workflow_turn_state.result.get("message")
+                    if isinstance(final_message, str) and final_message:
+                        conversation.add_message(
+                            Message(role="assistant", content=final_message)
+                        )
+                        yield UiComponent(
+                            rich_component=RichTextComponent(
+                                content=final_message,
+                                markdown=True,
+                            ),
+                            simple_component=SimpleTextComponent(text=final_message),
+                        )
+
+                    final_metadata = main_workflow_turn_state.to_metadata()
+                    context.metadata["main_workflow"] = final_metadata
+                    turn_state_store = getattr(self, "turn_state_store", None)
+                    if turn_state_store is not None and final_message:
+                        await turn_state_store.save_turn(final_metadata)
+
+                    if self.config.auto_save_conversations:
+                        await self.conversation_store.update_conversation(conversation)
+
+                    for hook in self.lifecycle_hooks:
+                        await hook.after_message(conversation)
+
+                    yield UiComponent(  # type: ignore
+                        rich_component=StatusBarUpdateComponent(
+                            status="idle",
+                            message="Workflow complete",
+                            detail="Ready for next message",
+                        )
+                    )
+                    yield UiComponent(  # type: ignore
+                        rich_component=ChatInputUpdateComponent(
+                            placeholder="Ask a question...",
+                            disabled=False,
+                        )
+                    )
+                    return
         # Agent no longer runs it as a separate branch.
 
         # Enhancer가 SQL 생성용 context를 구성할 수 있도록 다음 실행 단계를 SQL 생성으로 전환
@@ -1994,21 +2071,26 @@ You can:
         stage: Optional[str],
     ) -> List[ToolSchema]:
         """Return only the tools needed by the current workflow stage."""
+        # SQL 처리 단계에서만 run_sql/visualize_data를 허용하고 final_answer에서는
+        # 빈 집합으로 만들어, 완료 후 추가 tool-calling이 발생하지 않게 한다.
         allowed_tool_names_by_stage = {
             "sql_generation": {
                 "search_business_metadata",
                 "search_saved_correct_tool_uses",
                 "csv_to_json",
                 "run_sql",
+                "visualize_data",
             },
             "sql_regeneration": {
                 "search_business_metadata",
                 "search_saved_correct_tool_uses",
                 "csv_to_json",
                 "run_sql",
+                "visualize_data",
             },
             "successful_query_save": {
                 "save_question_tool_args",
+                "visualize_data",
             },
             "final_answer": set(),
         }
