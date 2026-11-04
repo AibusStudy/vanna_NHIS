@@ -39,22 +39,10 @@ from .state import CsvRequestState, MainWorkflowInput, MainWorkflowTurnState
 
 logger = logging.getLogger(__name__)
 
-FB1_FAILURE_TYPES = {
-    "intent_classification_failed",
-    "time_normalization_failed",
-    "time_metadata_validation_failed",
-    "question_structuring_failed",
-    "search_queries_generation_failed",
-}
-
 JSON_RETRY_FAILURE_TYPES = {
     "json_validation_failed",
     "json_validation_retry_exceeded",
 }
-
-FB2_DATA_DISCOVERY_FAILURE_TYPES = {"metadata_execution_error"}
-FB2_QUESTION_UNDERSTANDING_FAILURE_TYPES = {"metadata_semantic_mismatch"}
-
 
 def _find_turnstate_log_dir() -> Path:
     env_path = os.getenv("GENSQL_TURNSTATE_LOG_DIR")
@@ -266,14 +254,14 @@ class MainWorkflowExecutor:
             _log_turn_state("csv_request_unresolved", state)
             return state
 
-        await self._run_question_understanding_with_fb1(input, state)
+        await self._run_question_understanding(input, state)
         _log_turn_state("question_understanding_saved", state)
 
         self._apply_required_dimension_clarification(state)
 
         is_non_sql_intent = self._is_non_sql_intent(state)
         if self._should_run_data_discovery(state):
-            await self._run_data_discovery_with_fb2(input, state)
+            await self._run_data_discovery(input, state)
             _log_turn_state("data_discovery_saved", state)
         else:
             state.subflow("data_discovery").status = "skipped"
@@ -688,28 +676,13 @@ class MainWorkflowExecutor:
             and intent != "sql"
         )
 
-    async def _run_question_understanding_with_fb1(
+    async def _run_question_understanding(
         self,
         input: MainWorkflowInput,
         state: MainWorkflowTurnState,
     ) -> dict[str, Any]:
         result_metadata = await self._run_question_understanding_once(input, state)
-        failure_type = self._failure_type(result_metadata)
-
-        if (
-            result_metadata.get("status") == "failed"
-            and failure_type in FB1_FAILURE_TYPES
-            and state.fallback_state.can_use_fb1()
-        ):
-            feedback = self._build_fb1_feedback(result_metadata)
-            state.fallback_state.mark_fb1(feedback)
-            _log_turn_state("fb1_marked", state)
-            result_metadata = await self._run_question_understanding_once(input, state)
-
-        if (
-            result_metadata.get("status") == "failed"
-            and not self._is_json_validation_recovery_result(result_metadata)
-        ):
+        if result_metadata.get("status") == "failed":
             self._assign_clarification_result(
                 state,
                 failed_subflow="question_understanding",
@@ -739,11 +712,7 @@ class MainWorkflowExecutor:
                 original_message=input.original_message,
                 system_prompt=input.system_prompt,
                 tool_names=[tool.name for tool in input.tool_schemas],
-                metadata={
-                    **input.metadata,
-                    "fallback_state": state.fallback_state.snapshot(),
-                    "fallback_feedback": state.fallback_state.active_feedback,
-                },
+                metadata=dict(input.metadata),
             )
             result = await self.question_understanding_executor.run(workflow_input)
             self._collect_ui_component(state, result)
@@ -780,99 +749,25 @@ class MainWorkflowExecutor:
             _log_turn_state("question_understanding_error_assigned", state)
             return result_metadata
 
-    async def _run_data_discovery_with_fb2(
+    async def _run_data_discovery(
         self,
         input: MainWorkflowInput,
         state: MainWorkflowTurnState,
     ) -> dict[str, Any]:
         result_metadata = await self._run_data_discovery_once(input, state)
-        failure_type = self._failure_type(result_metadata)
-
-        if result_metadata.get("status") != "failed":
-            return result_metadata
-
-        if failure_type in FB2_DATA_DISCOVERY_FAILURE_TYPES:
-            if state.fallback_state.can_use_fb2():
-                feedback = self._build_fb2_feedback(
-                    result_metadata,
-                    next_action="retry_data_discovery",
-                    target_nodes=["metadata_search"],
-                )
-                state.fallback_state.mark_fb2(feedback)
-                _log_turn_state("fb2_marked_retry_data_discovery", state)
-                retry_result = await self._run_data_discovery_once(
-                    input,
-                    state,
-                    structured_output_override=self._original_question_structured_output(state),
-                    continue_with_warning=True,
-                )
-                if (
-                    retry_result.get("status") == "failed"
-                    and self._failure_type(retry_result) == "metadata_execution_error"
-                ):
-                    self._convert_metadata_execution_error_to_warning(state, retry_result)
-                return retry_result
-
-            self._convert_metadata_execution_error_to_warning(state, result_metadata)
-            return result_metadata
-
-        if failure_type in FB2_QUESTION_UNDERSTANDING_FAILURE_TYPES:
-            if state.fallback_state.can_use_fb2():
-                feedback = self._build_fb2_feedback(
-                    result_metadata,
-                    next_action="retry_question_understanding",
-                    target_nodes=["question_structuring", "search_queries"],
-                )
-                state.fallback_state.mark_fb2(feedback)
-                _log_turn_state("fb2_marked_retry_question_understanding", state)
-                question_result = await self._run_question_understanding_once(input, state)
-                if self._should_run_data_discovery(state):
-                    retry_result = await self._run_data_discovery_once(input, state)
-                    if retry_result.get("status") == "failed":
-                        retry_failure_type = self._failure_type(retry_result)
-                        if retry_failure_type == "metadata_execution_error":
-                            self._convert_metadata_execution_error_to_warning(state, retry_result)
-                        else:
-                            self._assign_clarification_result(
-                                state,
-                                failed_subflow="data_discovery",
-                                result_metadata=retry_result,
-                            )
-                    return retry_result
-                self._assign_clarification_result(
-                    state,
-                    failed_subflow="question_understanding",
-                    result_metadata=question_result,
-                )
-                return question_result
-
+        if result_metadata.get("status") == "failed":
             self._assign_clarification_result(
                 state,
                 failed_subflow="data_discovery",
                 result_metadata=result_metadata,
             )
-            return result_metadata
-
-        self._assign_clarification_result(
-            state,
-            failed_subflow="data_discovery",
-            result_metadata=result_metadata,
-        )
         return result_metadata
 
     async def _run_data_discovery_once(
         self,
         input: MainWorkflowInput,
         state: MainWorkflowTurnState,
-        *,
-        structured_output_override: dict[str, Any] | None = None,
-        continue_with_warning: bool = False,
     ) -> dict[str, Any]:
-        metadata_recovery = self._is_json_validation_recovery(state)
-        if metadata_recovery:
-            state.metadata["searches"] = []
-            structured_output_override = self._json_validation_recovery_structured_output(state)
-
         subflow_state = state.subflow("data_discovery")
         state.stage = "data_discovery"
         state.operation = "run_data_discovery"
@@ -882,22 +777,15 @@ class MainWorkflowExecutor:
             return {"status": "skipped"}
 
         try:
-            workflow_input = self._build_data_discovery_input(
-                state,
-                structured_output_override=structured_output_override,
-            )
+            workflow_input = self._build_data_discovery_input(state)
             result = await self._run_data_discovery_executor(workflow_input, input, state)
             self._collect_ui_component(state, result)
             result_metadata = self._to_metadata(result)
 
             self._apply_data_discovery_result(state, result_metadata)
-            if metadata_recovery:
-                state.metadata["searches"] = []
             _log_turn_state("data_discovery_result_assigned", state)
 
             subflow_state.status = result_metadata.get("status", "success")
-            if continue_with_warning and self._failure_type(result_metadata) == "metadata_execution_error":
-                subflow_state.status = "success"
             subflow_state.errors = list(result_metadata.get("errors", []))
             subflow_state.retry_counts = dict(result_metadata.get("retry_counts", {}))
             subflow_state.failed_node_id = result_metadata.get("failed_node_id")
@@ -927,51 +815,17 @@ class MainWorkflowExecutor:
     def _build_data_discovery_input(
         self,
         state: MainWorkflowTurnState,
-        *,
-        structured_output_override: dict[str, Any] | None = None,
     ) -> Any:
         if DataDiscover_Input is None:
             return None
 
         question_subflow = state.subflow("question_understanding")
-        structured_output = structured_output_override or state.structured_question
-        metadata_recovery = (
-            structured_output_override is not None
-            and self._is_json_validation_recovery(state)
-        )
         return DataDiscover_Input(
-            status="success" if metadata_recovery else question_subflow.status,
-            intent=structured_output.get("intent"),
-            structured_output=structured_output,
+            status=question_subflow.status,
+            intent=state.structured_question.get("intent"),
+            structured_output=state.structured_question,
             errors=question_subflow.errors,
             retry_counts=question_subflow.retry_counts,
-        )
-
-    @staticmethod
-    def _is_json_validation_retry_exceeded(errors: list[str]) -> bool:
-        error_text = "\n".join(str(error) for error in errors)
-        return (
-            "JSON_VALIDATION_FAILED: Generated JSON validation failed after retry limit."
-            in error_text
-        )
-
-    def _is_json_validation_recovery_result(self, result_metadata: dict[str, Any]) -> bool:
-        return (
-            self._failure_type(result_metadata) == "json_validation_retry_exceeded"
-            or self._is_json_validation_retry_exceeded(
-                list(result_metadata.get("errors", []))
-            )
-        )
-
-    def _is_json_validation_recovery(self, state: MainWorkflowTurnState) -> bool:
-        question_subflow = state.subflow("question_understanding")
-        return (
-            question_subflow.status == "failed"
-            and (
-                question_subflow.failure_type == "json_validation_retry_exceeded"
-                or self._is_json_validation_retry_exceeded(question_subflow.errors)
-            )
-            and bool(state.original_question.strip())
         )
 
     async def _run_data_discovery_executor(
@@ -1001,14 +855,7 @@ class MainWorkflowExecutor:
         ):
             return True
 
-        return (
-            question_subflow.status == "failed"
-            and (
-                question_subflow.failure_type == "json_validation_retry_exceeded"
-                or self._is_json_validation_retry_exceeded(question_subflow.errors)
-            )
-            and bool(state.original_question.strip())
-        )
+        return False
 
     # sql(통계지표)와 관련없는 질문을 헀을 때, 제시하는 기본 3가지 예시 가이드 질문
     @staticmethod
@@ -1112,56 +959,6 @@ class MainWorkflowExecutor:
         }
         state.fewshot = self._extract_fewshot_examples(fewshot_output)
 
-    def _original_question_structured_output(self, state: MainWorkflowTurnState) -> dict[str, Any]:
-        return {
-            "intent": "sql",
-            "question": state.original_question,
-            "original_question": state.original_question,
-        }
-
-    def _json_validation_recovery_structured_output(
-        self,
-        state: MainWorkflowTurnState,
-    ) -> dict[str, Any]:
-        structured_output = {
-            key: value
-            for key, value in state.structured_question.items()
-            if key not in {"search_plan", "search_queries"}
-        }
-        question_subflow = state.subflow("question_understanding")
-        error_message = self._json_validation_recovery_error_message(question_subflow)
-        structured_output.update(
-            {
-                "intent": "sql",
-                "question": state.original_question,
-                "original_question": state.original_question,
-                "metadata_discovery_recovery": {
-                    "source_subflow": "question_understanding",
-                    "source_node_id": question_subflow.failed_node_id,
-                    "failure_type": question_subflow.failure_type,
-                    "error_message": error_message,
-                },
-            }
-        )
-        if error_message:
-            structured_output["metadata_discovery_question"] = (
-                f"{state.original_question}\n\n"
-                f"JSON validation error: {error_message}"
-            )
-        return structured_output
-
-    @staticmethod
-    def _json_validation_recovery_error_message(subflow_state: Any) -> str | None:
-        failure_detail = getattr(subflow_state, "failure_detail", None)
-        if isinstance(failure_detail, dict):
-            error = failure_detail.get("error")
-            if isinstance(error, str) and error.strip():
-                return error.strip()
-        for error in getattr(subflow_state, "errors", []) or []:
-            if isinstance(error, str) and error.strip():
-                return error.strip()
-        return None
-
     def _convert_metadata_execution_error_to_warning(
         self,
         state: MainWorkflowTurnState,
@@ -1207,44 +1004,6 @@ class MainWorkflowExecutor:
             "사용자에게 어떤 조건, 지표, 테이블/컬럼 또는 시간 범위가 필요한지 "
             "명확히 재질문하세요."
         )
-
-    @staticmethod
-    def _build_fb1_feedback(result_metadata: dict[str, Any]) -> dict[str, Any]:
-        failure_type = MainWorkflowExecutor._failure_type(result_metadata) or "question_understanding_failed"
-        return {
-            "fallback_id": "FB1",
-            "failed_subflow": "question_understanding",
-            "failed_node_id": result_metadata.get("failed_node_id"),
-            "reason": failure_type,
-            "next_action": "retry_question_understanding",
-            "feedback": {
-                "reason": failure_type,
-                "errors": list(result_metadata.get("errors", [])),
-                "failure_detail": result_metadata.get("failure_detail"),
-            },
-        }
-
-    @staticmethod
-    def _build_fb2_feedback(
-        result_metadata: dict[str, Any],
-        *,
-        next_action: str,
-        target_nodes: list[str],
-    ) -> dict[str, Any]:
-        failure_type = MainWorkflowExecutor._failure_type(result_metadata) or "data_discovery_failed"
-        return {
-            "fallback_id": "FB2",
-            "failed_subflow": "data_discovery",
-            "failed_node_id": result_metadata.get("failed_node_id"),
-            "reason": failure_type,
-            "next_action": next_action,
-            "feedback": {
-                "reason": failure_type,
-                "target_nodes": target_nodes,
-                "errors": list(result_metadata.get("errors", [])),
-                "failure_detail": result_metadata.get("failure_detail"),
-            },
-        }
 
     @staticmethod
     def _failure_type(result_metadata: dict[str, Any]) -> str | None:

@@ -29,47 +29,6 @@ CsvRequestIntent = Literal[
 
 
 @dataclass
-class FallbackState:
-    fb1_count: int = 0
-    fb2_count: int = 0
-    active_feedback: dict[str, Any] | None = None
-    history: list[dict[str, Any]] = field(default_factory=list)
-
-    @property
-    def fb1_used(self) -> bool:
-        return self.fb1_count >= 1
-
-    @property
-    def fb2_used(self) -> bool:
-        return self.fb2_count >= 1
-
-    def can_use_fb1(self) -> bool:
-        return self.fb1_count < 1
-
-    def can_use_fb2(self) -> bool:
-        return self.fb2_count < 1
-
-    def mark_fb1(self, feedback: dict[str, Any]) -> None:
-        self.fb1_count += 1
-        self.active_feedback = feedback
-        self.history.append(feedback)
-
-    def mark_fb2(self, feedback: dict[str, Any]) -> None:
-        self.fb2_count += 1
-        self.active_feedback = feedback
-        self.history.append(feedback)
-
-    def snapshot(self) -> dict[str, Any]:
-        return {
-            "fb1_used": self.fb1_used,
-            "fb2_used": self.fb2_used,
-            "fb1_count": self.fb1_count,
-            "fb2_count": self.fb2_count,
-            "active_feedback": self.active_feedback,
-        }
-
-
-@dataclass
 class SubworkflowState:
     status: MainWorkflowStatus = "skipped"
     current_node: str | None = None
@@ -168,8 +127,6 @@ class MainWorkflowTurnState:
 
     stage: MainWorkflowStage = "question_understanding"
     operation: str | None = None
-
-    fallback_state: FallbackState = field(default_factory=FallbackState)
 
     subflows: dict[str, SubworkflowState] = field(
         default_factory=lambda: {
@@ -365,10 +322,6 @@ class MainWorkflowTurnState:
             "original_question": self.original_question,
             "stage": self.stage,
             "operation": self.operation,
-            "fallback_state": {
-                **self.fallback_state.snapshot(),
-                "history": list(self.fallback_state.history),
-            },
             "subflows": {
                 name: subflow.to_metadata() for name, subflow in self.subflows.items()
             },

@@ -304,7 +304,7 @@ class AgenticMetadataSearchNode:
                 },
                 warnings=[
                     *list(result_dict.get("warnings", [])),
-                    "agentic_metadata_semantic_mismatch: metadata result does not match structured question; continuing to fewshot_search without FB2 fallback",
+                    "agentic_metadata_semantic_mismatch: metadata result does not match structured question; continuing to fewshot_search",
                 ],
             )
 
@@ -475,4 +475,5 @@ def _is_metadata_semantic_mismatch(result: dict[str, Any]) -> bool:
         return True
     status = result.get("status")
     return status in {"metadata_semantic_mismatch", "semantic_mismatch", "mismatch"}
+
 

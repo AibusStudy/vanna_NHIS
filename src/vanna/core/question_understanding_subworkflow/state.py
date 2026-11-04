@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     from vanna.core.components import UiComponent
 
 NodeStatus = Literal["success", "failed", "retry", "finish", "skipped"]
-WorkflowStatus = Literal["success", "failed", "skipped", "fallback"]
+WorkflowStatus = Literal["success", "failed", "skipped"]
 
 
 @dataclass(frozen=True)
