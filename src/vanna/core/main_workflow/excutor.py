@@ -321,6 +321,36 @@ class MainWorkflowExecutor:
             state.stage = "final"
             return
 
+        plan = state.structured_question.get("visualization_plan")
+        plan = plan if isinstance(plan, dict) else {}
+        resolution = plan.get("indicator_resolution")
+        resolution = resolution if isinstance(resolution, dict) else {}
+        if (
+            plan.get("requires_indicator_contract") is True
+            and (
+                resolution.get("status") != "resolved"
+                or not isinstance(plan.get("indicator_contract"), dict)
+            )
+        ):
+            candidates = [
+                str(item.get("indicator_name") or item.get("indicator_code"))
+                for item in resolution.get("candidates", [])
+                if isinstance(item, dict)
+            ]
+            candidate_text = ", ".join(candidates)
+            state.operation = "clarification_required"
+            state.stage = "final"
+            state.result["status"] = "failed"
+            state.result["message"] = (
+                "질문의 지표를 metadata 계약으로 확정할 수 없습니다. "
+                + (
+                    f"후보 지표 중 원하는 항목을 지정해 주세요: {candidate_text}"
+                    if candidate_text
+                    else "metadata에 정의된 정확한 지표명을 지정해 주세요."
+                )
+            )
+            return
+
         system_prompt = input.system_prompt or ""
         if self.llm_context_enhancer is not None:
             before = system_prompt
@@ -484,13 +514,19 @@ class MainWorkflowExecutor:
                         sql_subflow.current_node = None
                         state.result["status"] = "success"
                         latest_data_year = metadata.get("latest_data_year")
+                        summary_message = self._visualization_summary_message(
+                            state.result.get("visualization_summary")
+                        )
                         if isinstance(latest_data_year, str) and latest_data_year:
-                            state.result["message"] = (
+                            latest_message = (
                                 f"현재 데이터는 {latest_data_year}년도를 기준으로 출력했습니다. "
                                 "원하는 연도를 지정해서 재질문해주세요."
                             )
+                            state.result["message"] = "\n".join(
+                                value for value in (summary_message, latest_message) if value
+                            )
                         else:
-                            state.result["message"] = (
+                            state.result["message"] = summary_message or (
                                 "SQL query and visualization completed successfully."
                                 if visualized
                                 else "SQL query completed successfully; no visualization was produced."
@@ -499,6 +535,8 @@ class MainWorkflowExecutor:
                         state.operation = "final_response_ready"
                         return
                     last_error = result.error or result.result_for_llm
+                    if result_metadata.get("retryable") is False:
+                        break
 
             failure_signature = (
                 " ".join((attempt_sql or "").split()).upper(),
@@ -615,6 +653,10 @@ class MainWorkflowExecutor:
             visualization.errors.append(result.error or result.result_for_llm)
         if result.ui_component is not None:
             state.ui_components.append(result.ui_component)
+        if result.success and isinstance(result.metadata, dict):
+            summary = result.metadata.get("result_summary")
+            if isinstance(summary, dict):
+                state.result["visualization_summary"] = summary
         completion_description = (
             "대화형 시각화 대시보드가 완료되었습니다."
             if result.success
@@ -638,6 +680,37 @@ class MainWorkflowExecutor:
             ]
         )
         return result.success
+
+    @staticmethod
+    def _visualization_summary_message(summary: Any) -> str | None:
+        if not isinstance(summary, dict):
+            return None
+        sources = summary.get("sources") if isinstance(summary.get("sources"), dict) else {}
+        tables = ", ".join(str(value) for value in sources.get("tables", []) if value)
+        columns = ", ".join(str(value) for value in sources.get("columns", []) if value)
+        extrema = summary.get("extrema") if isinstance(summary.get("extrema"), dict) else {}
+        maximum = extrema.get("maximum") if isinstance(extrema.get("maximum"), dict) else None
+        minimum = extrema.get("minimum") if isinstance(extrema.get("minimum"), dict) else None
+        years = ", ".join(str(value) for value in summary.get("referenceYears", []) if value)
+        filters = summary.get("requestedFilters", [])
+        filter_text = ", ".join(
+            f"{item.get('label')}: {item.get('value')}"
+            for item in filters
+            if isinstance(item, dict) and (item.get("label") or item.get("value"))
+        )
+        parts = []
+        if tables or columns:
+            parts.append(f"사용 테이블: {tables or '-'} / 컬럼: {columns or '-'}")
+        if maximum and minimum:
+            parts.append(
+                f"최댓값: {maximum.get('label')} {maximum.get('value')}, "
+                f"최솟값: {minimum.get('label')} {minimum.get('value')}"
+            )
+        if years:
+            parts.append(f"기준 연도: {years}")
+        if filter_text:
+            parts.append(f"요청 조건: {filter_text}")
+        return "\n".join(parts) or None
 
     @staticmethod
     def _fail_fixed_pipeline(state: MainWorkflowTurnState, message: str) -> None:

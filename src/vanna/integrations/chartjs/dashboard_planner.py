@@ -36,13 +36,31 @@ class VisualizationDashboardPlanner:
         geo = self._geo_contract(columns, structured)
         plan = structured.get("visualization_plan")
         indicator_contract = plan.get("indicator_contract") if isinstance(plan, dict) else None
+        result_labels = (
+            indicator_contract.get("result_labels", {})
+            if isinstance(indicator_contract, dict)
+            and isinstance(indicator_contract.get("result_labels"), dict)
+            else {}
+        )
         for column in columns:
             if column["field"] == geo.get("regionCodeField"):
-                column["label"] = "시도" if geo.get("level") == "시도" else column["label"]
+                column["label"] = {
+                    "시도": "시도",
+                    "시군구": "시군구",
+                    "읍면동": "읍면동",
+                    "중진료권": "중진료권",
+                }.get(str(geo.get("level")), column["label"])
             if column["field"] == geo.get("yearField"):
                 column["label"] = "기준연도"
+            metadata_label = result_labels.get(str(column["field"]).upper())
+            if isinstance(metadata_label, str) and metadata_label.strip():
+                column["label"] = metadata_label.strip()
             if column["field"] == geo.get("valueField") and isinstance(indicator_contract, dict):
-                column["label"] = str(indicator_contract.get("metric_name") or column["label"])
+                column["label"] = str(
+                    result_labels.get(str(column["field"]).upper())
+                    or indicator_contract.get("metric_name")
+                    or column["label"]
+                )
                 geo["valueLabel"] = column["label"]
         chart_df = self._chart_frame(df, geo, structured)
         effective_metadata = dict(column_metadata)
@@ -106,17 +124,91 @@ class VisualizationDashboardPlanner:
 
         warnings.extend(self._metric_warnings(columns, structured))
         filters = self._filters(structured)
+        result_summary = self._result_summary(
+            df,
+            columns=columns,
+            geo=geo,
+            structured=structured,
+            filters=filters,
+        )
         return {
             "schemaVersion": 1,
             "title": title,
             "dataset": dataset,
             "views": views,
             "filters": filters,
+            "resultSummary": result_summary,
             "layout": {
                 "type": "split-3" if len(views) == 3 else "grid",
                 "areas": [view["id"] for view in views],
             },
             "warnings": list(dict.fromkeys(warnings)),
+        }
+
+    @classmethod
+    def _result_summary(
+        cls,
+        df: pd.DataFrame,
+        *,
+        columns: list[dict[str, Any]],
+        geo: dict[str, Any],
+        structured: dict[str, Any],
+        filters: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Build deterministic, evidence-backed text displayed below the dashboard."""
+
+        plan = structured.get("visualization_plan")
+        contract = plan.get("indicator_contract") if isinstance(plan, dict) else {}
+        contract = contract if isinstance(contract, dict) else {}
+        schema = str(contract.get("schema") or "").strip()
+        table = str(contract.get("table") or "").strip()
+        source_table = f"{schema}.{table}" if schema and table else table
+        year_field = geo.get("yearField")
+        years = []
+        if isinstance(year_field, str) and year_field in df.columns:
+            years = sorted(
+                {
+                    str(value).replace(".0", "")
+                    for value in df[year_field].dropna().tolist()
+                },
+                reverse=True,
+            )
+
+        value_field = geo.get("valueField")
+        frame = df
+        region_field = geo.get("regionCodeField")
+        if isinstance(region_field, str) and region_field in frame.columns:
+            detail = frame[
+                frame[region_field].astype(str).str.upper().str.replace(r"\.0$", "", regex=True)
+                != "ALL"
+            ]
+            if not detail.empty:
+                frame = detail
+        extrema: dict[str, Any] = {}
+        if isinstance(value_field, str) and value_field in frame.columns:
+            values = pd.to_numeric(frame[value_field], errors="coerce")
+            valid = values.dropna()
+            if not valid.empty:
+                label_field = region_field if region_field in frame.columns else year_field
+                for key, index in (("maximum", valid.idxmax()), ("minimum", valid.idxmin())):
+                    label = frame.loc[index, label_field] if label_field in frame.columns else index
+                    extrema[key] = {
+                        "label": cls._json_value(label),
+                        "value": cls._json_value(values.loc[index]),
+                    }
+
+        return {
+            "sources": {
+                "tables": [source_table] if source_table else [],
+                "columns": [str(column["field"]) for column in columns],
+            },
+            "extrema": extrema,
+            "referenceYears": years,
+            "requestedFilters": [
+                {"label": item.get("label"), "value": cls._json_value(item.get("value"))}
+                for item in filters
+                if isinstance(item, dict)
+            ],
         }
 
     @classmethod

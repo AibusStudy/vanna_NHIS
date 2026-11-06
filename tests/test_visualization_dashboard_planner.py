@@ -107,3 +107,34 @@ def test_numeric_std_yyyy_is_not_selected_as_map_metric() -> None:
     map_view = next(view for view in dashboard["views"] if view["type"] == "map")
     assert map_view["geo"]["yearField"] == "STD_YYYY"
     assert map_view["geo"]["valueField"] == "IDCT_VL"
+
+
+def test_dashboard_includes_evidence_backed_result_summary() -> None:
+    dashboard = VisualizationDashboardPlanner().plan(
+        pd.DataFrame({
+            "STD_YYYY": [2024, 2024],
+            "SI_DO_CD": ["11", "26"],
+            "IDCT_VL": [12.5, 9.8],
+        }),
+        title="항생제 처방률",
+        column_metadata={
+            "STD_YYYY": {"sql_role": "time", "semantic_type": "year"},
+            "SI_DO_CD": {"sql_role": "dimension", "semantic_type": "administrative_area"},
+            "IDCT_VL": {"sql_role": "measure", "semantic_type": "ratio"},
+        },
+        structured_question={
+            "geo_level": "시도",
+            "requested_views": ["table", "bar", "map"],
+            "visualization_plan": {
+                "indicator_contract": {
+                    "schema": "NHIS_IDX",
+                    "table": "HMLT_ATBTC_IDX",
+                }
+            },
+        },
+    )
+    summary = dashboard["resultSummary"]
+    assert summary["sources"]["tables"] == ["NHIS_IDX.HMLT_ATBTC_IDX"]
+    assert summary["referenceYears"] == ["2024"]
+    assert summary["extrema"]["maximum"] == {"label": "11", "value": 12.5}
+    assert summary["extrema"]["minimum"] == {"label": "26", "value": 9.8}
