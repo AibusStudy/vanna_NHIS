@@ -145,6 +145,54 @@ def test_bar_and_map_always_use_indicator_value_instead_of_components() -> None:
     assert bar_view["data"]["labels"] == ["11110", "11140"]
 
 
+def test_component_measure_alias_supports_bar_map_and_summary() -> None:
+    dashboard = VisualizationDashboardPlanner().plan(
+        pd.DataFrame({
+            "STD_YYYY": [2024, 2024, 2024],
+            "SI_DO_CD": ["11", "26", "ALL"],
+            "TOTAL_EVENTS": [120, 80, 200],
+        }),
+        title="regional treated-person count",
+        column_metadata={
+            "STD_YYYY": {"sql_role": "time", "semantic_type": "year"},
+            "SI_DO_CD": {
+                "sql_role": "dimension", "semantic_type": "administrative_area",
+            },
+            "TOTAL_EVENTS": {
+                "sql_role": "measure", "semantic_type": "quantity",
+                "measure_role": "numerator",
+            },
+        },
+        structured_question={
+            "geo_level": "시도",
+            "requested_views": ["table", "bar", "map"],
+            "visualization_plan": {
+                "indicator_contract": {
+                    "result_measure_intent": "component",
+                    "requested_result_columns": ["EVNT_CNT"],
+                    "components": [
+                        {
+                            "column": "EVNT_CNT",
+                            "role": "numerator",
+                            "label": "실인원 수",
+                        }
+                    ],
+                }
+            },
+        },
+    )
+
+    bar_view = next(view for view in dashboard["views"] if view["type"] == "chartjs")
+    map_view = next(view for view in dashboard["views"] if view["type"] == "map")
+    assert bar_view["data"]["datasets"][0]["data"] == [120, 80]
+    assert map_view["geo"]["valueField"] == "TOTAL_EVENTS"
+    assert map_view["geo"]["valueLabel"] == "실인원 수"
+    assert dashboard["resultSummary"]["extrema"] == {
+        "maximum": {"label": "11", "value": 120.0},
+        "minimum": {"label": "26", "value": 80.0},
+    }
+
+
 def test_dashboard_includes_evidence_backed_result_summary() -> None:
     dashboard = VisualizationDashboardPlanner().plan(
         pd.DataFrame({

@@ -42,6 +42,31 @@ class VisualizationDashboardPlanner:
             and isinstance(indicator_contract.get("result_labels"), dict)
             else {}
         )
+        component_value_label = None
+        if (
+            isinstance(indicator_contract, dict)
+            and indicator_contract.get("result_measure_intent") == "component"
+        ):
+            requested_columns = {
+                str(value).upper()
+                for value in indicator_contract.get("requested_result_columns", [])
+                if isinstance(value, str)
+            }
+            selected_component = next(
+                (
+                    item
+                    for item in indicator_contract.get("components", [])
+                    if isinstance(item, dict)
+                    and str(item.get("column") or "").upper() in requested_columns
+                ),
+                None,
+            )
+            if isinstance(selected_component, dict):
+                component_value_label = str(
+                    selected_component.get("label")
+                    or result_labels.get(str(selected_component.get("column") or "").upper())
+                    or ""
+                ).strip() or None
         for column in columns:
             if column["field"] == geo.get("regionCodeField"):
                 column["label"] = {
@@ -58,6 +83,7 @@ class VisualizationDashboardPlanner:
             if column["field"] == geo.get("valueField") and isinstance(indicator_contract, dict):
                 column["label"] = str(
                     result_labels.get(str(column["field"]).upper())
+                    or component_value_label
                     or indicator_contract.get("metric_name")
                     or column["label"]
                 )
@@ -72,6 +98,7 @@ class VisualizationDashboardPlanner:
                 "description": column["description"],
                 "sql_role": column["sqlRole"],
                 "semantic_type": column["semanticType"],
+                "measure_role": column["measureRole"],
                 "code_name": column["codeName"],
                 "unit": column["unit"],
             }
@@ -257,6 +284,17 @@ class VisualizationDashboardPlanner:
             matching = frame[level_values == str(geo.get("detailLevelValue") or "1")]
             if not matching.empty:
                 frame = matching
+        region_field = geo.get("regionCodeField")
+        if isinstance(region_field, str) and region_field in frame.columns:
+            detail_rows = frame[
+                frame[region_field]
+                .astype(str)
+                .str.upper()
+                .str.replace(r"\.0$", "", regex=True)
+                != "ALL"
+            ]
+            if not detail_rows.empty:
+                frame = detail_rows
 
         presentation_fields = [
             geo.get("yearField"), geo.get("regionCodeField"), geo.get("valueField")
@@ -368,6 +406,12 @@ class VisualizationDashboardPlanner:
             isinstance(visualization_plan, dict)
             and isinstance(visualization_plan.get("indicator_contract"), dict)
         )
+        indicator_contract = (
+            visualization_plan.get("indicator_contract")
+            if isinstance(visualization_plan, dict)
+            and isinstance(visualization_plan.get("indicator_contract"), dict)
+            else {}
+        )
         metric = next(
             (
                 column
@@ -390,6 +434,42 @@ class VisualizationDashboardPlanner:
                 ),
                 None,
             )
+        if (
+            metric is None
+            and indicator_contract.get("result_measure_intent") == "component"
+        ):
+            component_roles = {
+                str(item.get("role") or "").lower()
+                for item in indicator_contract.get("components", [])
+                if isinstance(item, dict)
+                and str(item.get("column") or "").upper()
+                in {
+                    str(value).upper()
+                    for value in indicator_contract.get("requested_result_columns", [])
+                    if isinstance(value, str)
+                }
+            }
+            metric = next(
+                (
+                    column
+                    for column in columns
+                    if column.get("isNumeric")
+                    and column["field"] not in excluded_fields
+                    and str(column.get("measureRole") or "").lower() in component_roles
+                ),
+                None,
+            )
+            if metric is None:
+                numeric_outputs = [
+                    column
+                    for column in columns
+                    if column.get("isNumeric")
+                    and column["field"] not in excluded_fields
+                    and str(column.get("semanticType") or "").lower()
+                    not in {"year", "time", "administrative_area", "region", "geography", "code"}
+                ]
+                if len(numeric_outputs) == 1:
+                    metric = numeric_outputs[0]
         if metric is None and not has_indicator_contract:
             metric = next(
             (
