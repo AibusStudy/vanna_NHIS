@@ -332,23 +332,49 @@ class MainWorkflowExecutor:
                 or not isinstance(plan.get("indicator_contract"), dict)
             )
         ):
-            candidates = [
-                str(item.get("indicator_name") or item.get("indicator_code"))
+            candidate_rows = [
+                item
                 for item in resolution.get("candidates", [])
                 if isinstance(item, dict)
+            ]
+            candidates = [
+                str(item.get("indicator_name") or item.get("indicator_code"))
+                for item in candidate_rows
             ]
             candidate_text = ", ".join(candidates)
             state.operation = "clarification_required"
             state.stage = "final"
-            state.result["status"] = "failed"
+            state.result["status"] = "success"
             state.result["message"] = (
-                "질문의 지표를 metadata 계약으로 확정할 수 없습니다. "
+                "질문의 지표를 하나로 확정하려면 지표 종류를 선택해 주세요. "
                 + (
                     f"후보 지표 중 원하는 항목을 지정해 주세요: {candidate_text}"
                     if candidate_text
                     else "metadata에 정의된 정확한 지표명을 지정해 주세요."
                 )
             )
+            if candidate_rows:
+                state.ui_components.append(UiComponent(
+                    rich_component=ButtonGroupComponent(
+                        buttons=[
+                            {
+                                "label": str(
+                                    item.get("indicator_name")
+                                    or item.get("indicator_code")
+                                ),
+                                "action": str(item.get("indicator_code") or ""),
+                                "variant": "secondary",
+                            }
+                            for item in candidate_rows
+                            if item.get("indicator_code")
+                        ],
+                        orientation="vertical",
+                        spacing="small",
+                        alignment="stretch",
+                        full_width=True,
+                    ),
+                    simple_component=None,
+                ))
             return
 
         system_prompt = input.system_prompt or ""
