@@ -330,7 +330,9 @@ class ChartJsChartGenerator:
             code = raw.removesuffix(".0")
             if getattr(self, "region_code_scheme", "official") == "sequential":
                 return self.SEQUENTIAL_REGION_LABELS.get(code.lstrip("0") or "0", raw)
-            return self.REGION_LABELS.get(code[:2], raw)
+            # Only a two-digit code is a province. Keep district/neighborhood
+            # codes intact so the UI can resolve their exact metadata labels.
+            return self.REGION_LABELS.get(code, raw) if len(code) == 2 else raw
         if self._is_time_dimension(column) and raw.removesuffix(".0").isdigit():
             digits = raw.removesuffix(".0")
             if len(digits) == 4:

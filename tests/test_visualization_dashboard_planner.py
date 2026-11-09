@@ -142,6 +142,7 @@ def test_bar_and_map_always_use_indicator_value_instead_of_components() -> None:
     map_view = next(view for view in dashboard["views"] if view["type"] == "map")
     assert bar_view["data"]["datasets"][0]["data"] == [100.0, 150.0]
     assert map_view["geo"]["valueField"] == "CALCULATED_OUTPUT"
+    assert bar_view["data"]["labels"] == ["11110", "11140"]
 
 
 def test_dashboard_includes_evidence_backed_result_summary() -> None:
