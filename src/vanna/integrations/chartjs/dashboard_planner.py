@@ -87,6 +87,9 @@ class VisualizationDashboardPlanner:
             if view_type == "table":
                 views.append({"id": "statistics-table", "type": "table", "title": f"{title} 통계표"})
             elif view_type in {"bar", "line", "doughnut"}:
+                if isinstance(indicator_contract, dict) and not geo.get("valueField"):
+                    warnings.append("The indicator metric output role is not bound to a result column.")
+                    continue
                 # 항목이 하나뿐이어도 막대그래프는 동일한 가로 방향을 유지합니다.
                 horizontal_bar = view_type == "bar"
                 views.append({
@@ -327,6 +330,7 @@ class VisualizationDashboardPlanner:
             "description": item.get("description") or "",
             "dataType": str(series.dtype),
             "sqlRole": sql_role,
+            "measureRole": item.get("measure_role"),
             "semanticType": semantic_type,
             "codeName": item.get("code_name"),
             "unit": item.get("unit"),
@@ -357,7 +361,37 @@ class VisualizationDashboardPlanner:
             )
             if field
         }
+
+        # 지표 계약 및 SQL 계보 기준으로 시각화에 표시할 컬럼 선택 판단 로직 (SELECT 컬럼이 여러개인 경우)
+        visualization_plan = structured.get("visualization_plan")
+        has_indicator_contract = (
+            isinstance(visualization_plan, dict)
+            and isinstance(visualization_plan.get("indicator_contract"), dict)
+        )
         metric = next(
+            (
+                column
+                for column in columns
+                if column.get("isNumeric")
+                and column["field"] not in excluded_fields
+                and str(column.get("measureRole") or "").lower() == "metric"
+            ),
+            None,
+        )
+        if metric is None:
+            metric = next(
+                (
+                    column
+                    for column in columns
+                    if column.get("isNumeric")
+                    and column["field"] not in excluded_fields
+                    and str(column.get("semanticType") or "").lower()
+                    in {"ratio", "rate", "percentage", "percent", "index"}
+                ),
+                None,
+            )
+        if metric is None and not has_indicator_contract:
+            metric = next(
             (
                 column
                 for column in columns
@@ -373,7 +407,7 @@ class VisualizationDashboardPlanner:
             ),
             None,
         )
-        if metric is None:
+        if metric is None and not has_indicator_contract:
             metric = next(
                 (
                     column
@@ -392,7 +426,7 @@ class VisualizationDashboardPlanner:
         if requested and region is None and not (latitude and longitude):
             errors.append("지도 생성에 필요한 표준 지역 코드 또는 위도·경도 컬럼이 없습니다.")
         return {
-            "valid": region is not None or bool(latitude and longitude),
+            "valid": (region is not None or bool(latitude and longitude)) and metric is not None,
             "requested": requested,
             "level": geo_level,
             "regionCodeField": region["field"] if region else None,

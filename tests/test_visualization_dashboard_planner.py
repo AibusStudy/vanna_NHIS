@@ -109,6 +109,41 @@ def test_numeric_std_yyyy_is_not_selected_as_map_metric() -> None:
     assert map_view["geo"]["valueField"] == "IDCT_VL"
 
 
+def test_bar_and_map_always_use_indicator_value_instead_of_components() -> None:
+    dashboard = VisualizationDashboardPlanner().plan(
+        pd.DataFrame({
+            "SI_DO_SI_GUN_GU_CD": ["11110", "11140"],
+            "OBJTR_CNT": [1000, 2000],
+            "EVNT_CNT": [100, 300],
+            "CALCULATED_OUTPUT": [100.0, 150.0],
+        }),
+        title="regional indicator",
+        column_metadata={
+            "SI_DO_SI_GUN_GU_CD": {
+                "sql_role": "dimension", "semantic_type": "administrative_area",
+            },
+            "OBJTR_CNT": {"sql_role": "measure", "semantic_type": "quantity"},
+            "EVNT_CNT": {"sql_role": "measure", "semantic_type": "quantity"},
+            "CALCULATED_OUTPUT": {
+                "sql_role": "measure", "semantic_type": "quantity",
+                "measure_role": "metric", "unit": "%",
+            },
+        },
+        structured_question={
+            "geo_level": "시군구",
+            "requested_views": ["table", "bar", "map"],
+            "visualization_plan": {
+                "indicator_contract": {"metric_column": "SOME_FUTURE_METRIC_COLUMN"},
+            },
+        },
+    )
+
+    bar_view = next(view for view in dashboard["views"] if view["type"] == "chartjs")
+    map_view = next(view for view in dashboard["views"] if view["type"] == "map")
+    assert bar_view["data"]["datasets"][0]["data"] == [100.0, 150.0]
+    assert map_view["geo"]["valueField"] == "CALCULATED_OUTPUT"
+
+
 def test_dashboard_includes_evidence_backed_result_summary() -> None:
     dashboard = VisualizationDashboardPlanner().plan(
         pd.DataFrame({
