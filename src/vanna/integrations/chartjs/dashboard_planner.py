@@ -208,9 +208,16 @@ class VisualizationDashboardPlanner:
         frame = df
         region_field = geo.get("regionCodeField")
         if isinstance(region_field, str) and region_field in frame.columns:
+            region_values = frame[region_field]
             detail = frame[
-                frame[region_field].astype(str).str.upper().str.replace(r"\.0$", "", regex=True)
-                != "ALL"
+                region_values.notna()
+                & (
+                    region_values
+                    .astype(str)
+                    .str.upper()
+                    .str.replace(r"\.0$", "", regex=True)
+                    != "ALL"
+                )
             ]
             if not detail.empty:
                 frame = detail
@@ -286,12 +293,16 @@ class VisualizationDashboardPlanner:
                 frame = matching
         region_field = geo.get("regionCodeField")
         if isinstance(region_field, str) and region_field in frame.columns:
+            region_values = frame[region_field]
             detail_rows = frame[
-                frame[region_field]
-                .astype(str)
-                .str.upper()
-                .str.replace(r"\.0$", "", regex=True)
-                != "ALL"
+                region_values.notna()
+                & (
+                    region_values
+                    .astype(str)
+                    .str.upper()
+                    .str.replace(r"\.0$", "", regex=True)
+                    != "ALL"
+                )
             ]
             if not detail_rows.empty:
                 frame = detail_rows

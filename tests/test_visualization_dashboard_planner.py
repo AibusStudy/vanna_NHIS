@@ -149,7 +149,7 @@ def test_component_measure_alias_supports_bar_map_and_summary() -> None:
     dashboard = VisualizationDashboardPlanner().plan(
         pd.DataFrame({
             "STD_YYYY": [2024, 2024, 2024],
-            "SI_DO_CD": ["11", "26", "ALL"],
+            "SI_DO_CD": ["11", "26", None],
             "TOTAL_EVENTS": [120, 80, 200],
         }),
         title="regional treated-person count",
