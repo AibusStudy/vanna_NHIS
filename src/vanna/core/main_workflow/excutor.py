@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -257,7 +256,6 @@ class MainWorkflowExecutor:
         await self._run_question_understanding(input, state)
         _log_turn_state("question_understanding_saved", state)
 
-        self._apply_required_dimension_clarification(state)
 
         is_non_sql_intent = self._is_non_sql_intent(state)
         if self._should_run_data_discovery(state):
@@ -991,54 +989,6 @@ class MainWorkflowExecutor:
             "연도별 건강검진 수검자 수를 보여줘.",
             "시도별 의료이용 현황을 보여줘.",
         ]
-
-    @staticmethod
-    def _apply_required_dimension_clarification(state: MainWorkflowTurnState) -> None:
-        """통계 질문의 지역 범위만 SQL 생성 전에 확정합니다.
-
-        연도 미지정은 clarification 사유가 아닙니다. 제품 계층에서 검색된
-        물리 시간 컬럼의 최신 데이터 연도 정책을 적용할 수 있도록 후속
-        metadata discovery와 SQL 생성 단계로 전달합니다.
-        """
-        if state.subflow("question_understanding").status != "success":
-            return
-        structured = state.structured_question
-        if structured.get("intent") != "sql":
-            return
-
-        question = state.original_question.strip()
-        group_by = structured.get("group_by") if isinstance(structured.get("group_by"), list) else []
-        time_conditions = structured.get("time_conditions") if isinstance(structured.get("time_conditions"), list) else []
-        group_text = " ".join(
-            " ".join(str(item.get(key) or "") for key in ("field_meaning", "original_text"))
-            for item in group_by if isinstance(item, dict)
-        )
-        requests_time_series = any(term in question or term in group_text for term in ("연도별", "년도별", "해마다", "매년"))
-        has_year = bool(time_conditions) or bool(re.search(r"(?:19|20)\d{2}\s*년?", question)) or requests_time_series
-        region_names = (
-            "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
-            "경기", "강원", "충북", "충청북도", "충남", "충청남도", "전북",
-            "전라북도", "전남", "전라남도", "경북", "경상북도", "경남",
-            "경상남도", "제주",
-        )
-        has_region = (
-            "전국" in question
-            or any(region in question for region in region_names)
-            or any(term in question for term in ("시도별", "시·도별", "지역별", "시군구별", "읍면동별", "중진료권별"))
-            or any(term in group_text for term in ("지역", "시도", "시·도", "시군구", "읍면동", "중진료권"))
-        )
-
-        if not has_year:
-            state.operation = "clarification_required"
-            state.result["status"] = "success"
-            state.result["message"] = "조회할 연도를 지정해 주세요. 예: 2024년 전국 총 진료비를 보여줘."
-            state.stage = "final"
-            return
-        if not has_region:
-            state.operation = "clarification_required"
-            state.result["status"] = "success"
-            state.result["message"] = "조회할 지역 범위를 지정해 주세요. 전국인지, 특정 시·도 또는 시군구인지 알려주세요."
-            state.stage = "final"
 
     def _apply_data_discovery_result(
         self,
