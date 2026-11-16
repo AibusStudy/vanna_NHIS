@@ -360,7 +360,12 @@ class MainWorkflowExecutor:
                                     item.get("indicator_name")
                                     or item.get("indicator_code")
                                 ),
-                                "action": str(item.get("indicator_code") or ""),
+                                "action": str(
+                                    item.get("selection_label")
+                                    or item.get("indicator_name")
+                                    or item.get("indicator_code")
+                                    or ""
+                                ),
                                 "variant": "secondary",
                             }
                             for item in candidate_rows
