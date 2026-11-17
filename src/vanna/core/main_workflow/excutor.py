@@ -538,6 +538,15 @@ class MainWorkflowExecutor:
                         state.result["csv_name"] = metadata.get("output_file")
                         state.result["row_count"] = metadata.get("row_count")
                         state.result["columns"] = list(metadata.get("columns") or [])
+                        if metadata.get("row_count") == 0:
+                            sql_subflow.current_node = None
+                            state.result["status"] = "no_data"
+                            state.result["message"] = (
+                                "SQL은 정상적으로 실행되었지만 요청한 조건에 해당하는 데이터가 없습니다."
+                            )
+                            state.stage = "final"
+                            state.operation = "final_response_ready"
+                            return
                         # SQL 성공 시 반환된 CSV를 입력으로 시각화를 즉시 연속 실행한다.
                         visualized = await self._visualize_sql_result(input, state)
                         sql_subflow.current_node = None
